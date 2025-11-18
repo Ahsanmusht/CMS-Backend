@@ -18,6 +18,7 @@ const employeeRoutes = require('./employeeRoutes');
 const salaryRoutes = require('./salaryRoutes');
 const emailRoutes = require('./emailRoutes');
 const contactRoutes = require('./contactRoutes');
+const rbacRoutes = require('./rbacRoutes');
 // const documentRoutes = require('./documents');
 // const notificationRoutes = require('./notifications');
 
@@ -42,6 +43,7 @@ router.use('/employees', employeeRoutes);
 router.use('/salaries', salaryRoutes);
 router.use('/emails', emailRoutes);
 router.use('/contact', contactRoutes);
+router.use('/rbac', rbacRoutes);
 // router.use('/documents', documentRoutes);
 // router.use('/notifications', notificationRoutes);
 
