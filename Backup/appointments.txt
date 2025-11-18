@@ -1,0 +1,1049 @@
+const express = require('express');
+const nodemailer = require('nodemailer');
+const db = require('../config/database');
+const { authenticateToken } = require('../middleware/auth');
+const { validate, schemas } = require('../middleware/validation');
+
+const router = express.Router();
+
+const getCompanyEmailConfig = async (companyId, connection) => {
+  let secure = true;
+  const [rows] = await connection.execute(
+    `SELECT smtp_host AS host, smtp_port AS port, smtp_user AS user, smtp_pass AS pass, to_emails AS emails
+     FROM companies WHERE id = ? LIMIT 1`,
+    [companyId]
+  );
+
+  if (rows.length === 0) throw new Error('Company SMTP config not found');
+
+  const { host, port, user, pass, emails } = rows[0];
+
+  return {
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+    to_emails: emails
+  };
+};
+
+// Email templates
+const getAppointmentEmailTemplate = (appointment, type = 'created') => {
+  const statusColors = {
+    created: '#28a745',
+    updated: '#ffc107',
+    confirmed: '#007bff',
+    cancelled: '#dc3545'
+  };
+
+  const actionText = type === 'created' ? 'Created' : 'Updated';
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Appointment ${actionText}</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f4f6f9; }
+            .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }
+            .header h1 { margin: 0; font-size: 28px; font-weight: 300; }
+            .content { padding: 30px; }
+            .appointment-card { background: #f8f9fa; border-left: 5px solid ${statusColors[type] || '#007bff'}; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            .detail-row { display: flex; margin: 10px 0; align-items: center; }
+            .detail-label { font-weight: 600; color: #495057; min-width: 120px; }
+            .detail-value { color: #212529; flex: 1; }
+            .status-badge { 
+                display: inline-block; 
+                padding: 4px 12px; 
+                border-radius: 20px; 
+                font-size: 12px; 
+                font-weight: 600; 
+                text-transform: uppercase;
+                background-color: ${statusColors[appointment.status] || '#6c757d'};
+                color: white;
+            }
+            .footer { background-color: #343a40; color: white; padding: 20px; text-align: center; font-size: 14px; }
+            .highlight { background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ffc107; }
+            .icon { width: 16px; height: 16px; margin-right: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🗓️ Appointment ${actionText}</h1>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Your appointment has been ${type}</p>
+            </div>
+            
+            <div class="content">
+                <div class="highlight">
+                    <strong>📋 Appointment Details</strong>
+                </div>
+                
+                <div class="appointment-card">
+                    <div class="detail-row">
+                        <span class="detail-label">👤 Client:</span>
+                        <span class="detail-value">${appointment.client_name || 'N/A'}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">💼 Service:</span>
+                        <span class="detail-value">${appointment.service_name || 'N/A'}</span>
+                    </div>
+                    ${appointment.variant_name ? `
+                    <div class="detail-row">
+                        <span class="detail-label">🔧 Variant:</span>
+                        <span class="detail-value">${appointment.variant_name}</span>
+                    </div>
+                    ` : ''}
+                    <div class="detail-row">
+                        <span class="detail-label">👨‍⚕️ Provider:</span>
+                        <span class="detail-value">${appointment.provider_name || 'N/A'}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">📅 Date & Time:</span>
+                        <span class="detail-value">${new Date(appointment.start_time).toLocaleString()}</span>
+                    </div>
+                    ${appointment.end_time ? `
+                    <div class="detail-row">
+                        <span class="detail-label">⏰ End Time:</span>
+                        <span class="detail-value">${new Date(appointment.end_time).toLocaleString()}</span>
+                    </div>
+                    ` : ''}
+                    <div class="detail-row">
+                        <span class="detail-label">📊 Status:</span>
+                        <span class="detail-value"><span class="status-badge">${appointment.status}</span></span>
+                    </div>
+                    ${appointment.notes ? `
+                    <div class="detail-row">
+                        <span class="detail-label">📝 Notes:</span>
+                        <span class="detail-value">${appointment.notes}</span>
+                    </div>
+                    ` : ''}
+                    ${appointment.price ? `
+                    <div class="detail-row">
+                        <span class="detail-label">💰 Price:</span>
+                        <span class="detail-value">$${appointment.price}</span>
+                    </div>
+                    ` : ''}
+                </div>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <p style="color: #6c757d; font-style: italic;">
+                        ${type === 'created' ?
+      '✅ This appointment has been successfully created in our system.' :
+      '🔄 This appointment has been updated with the latest information.'
+    }
+                    </p>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <p style="margin: 0;">© ${new Date().getFullYear()} AF Group.Tech. All rights reserved.</p>
+                <p style="margin: 5px 0 0 0; font-size: 12px; opacity: 0.8;">
+                    This is an automated message. Please do not reply to this email.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+};
+
+// Send appointment email
+const sendAppointmentEmail = async (appointment, toEmails = [], emailConfig, type = 'created') => {
+  try {
+    if (typeof toEmails === 'string') {
+      try {
+        toEmails = JSON.parse(toEmails);
+      } catch (err) {
+        console.warn('Invalid JSON string for toEmails:', toEmails);
+        toEmails = [];
+      }
+    }
+
+    // Safety check: ensure it's an array
+    if (!Array.isArray(toEmails)) {
+      toEmails = [toEmails];
+    }
+    const transporter = nodemailer.createTransport(emailConfig);
+
+    const mailOptions = {
+      from: emailConfig.auth.user,
+      to: toEmails.join(','), // multiple recipients
+      subject: `Appointment ${type.charAt(0).toUpperCase() + type.slice(1)} - ${appointment.service_name}`,
+      html: getAppointmentEmailTemplate(appointment, type)
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`Appointment ${type} email sent to: ${toEmails.join(', ')}`);
+  } catch (error) {
+    console.error('Error sending email:', error);
+    // Don't crash app, fail silently
+  }
+};
+
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Appointment:
+ *       type: object
+ *       required:
+ *         - client_id
+ *         - service_id
+ *         - start_time
+ *         - status
+ *       properties:
+ *         client_id:
+ *           type: integer
+ *           description: ID of the client
+ *           example: 1
+ *         service_id:
+ *           type: integer
+ *           description: ID of the service
+ *           example: 1
+ *         service_variant_id:
+ *           type: integer
+ *           description: ID of the service variant (optional)
+ *           example: 1
+ *         provider_id:
+ *           type: integer
+ *           description: ID of the service provider
+ *           example: 1
+ *         start_time:
+ *           type: string
+ *           format: date-time
+ *           description: Start time of the appointment
+ *           example: "2024-12-15T10:00:00Z"
+ *         end_time:
+ *           type: string
+ *           format: date-time
+ *           description: End time of the appointment
+ *           example: "2024-12-15T11:00:00Z"
+ *         status:
+ *           type: string
+ *           enum: [scheduled, confirmed, in_progress, completed, cancelled, no_show]
+ *           description: Status of the appointment
+ *           example: "scheduled"
+ *         notes:
+ *           type: string
+ *           description: Additional notes for the appointment
+ *           example: "Client prefers morning appointments"
+ *         price:
+ *           type: number
+ *           format: decimal
+ *           description: Price of the appointment
+ *           example: 150.00
+ *         discount:
+ *           type: number
+ *           format: decimal
+ *           description: Discount applied
+ *           example: 15.00
+ *         payment_status:
+ *           type: string
+ *           enum: [pending, paid, partial, refunded]
+ *           description: Payment status
+ *           example: "pending"
+ */
+
+/**
+ * @swagger
+ * /appointments:
+ *   get:
+ *     summary: Get all appointments
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter by appointment date (YYYY-MM-DD)
+ *         example: "2024-12-15"
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [scheduled, confirmed, in_progress, completed, cancelled, no_show]
+ *         description: Filter by appointment status
+ *         example: "scheduled"
+ *       - in: query
+ *         name: client_id
+ *         schema:
+ *           type: integer
+ *         description: Filter by client ID
+ *         example: 1
+ *       - in: query
+ *         name: provider_id
+ *         schema:
+ *           type: integer
+ *         description: Filter by provider ID
+ *         example: 1
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Page number for pagination
+ *         example: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Number of items per page
+ *         example: 10
+ *     responses:
+ *       200:
+ *         description: List of appointments retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 appointments:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Appointment'
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     page:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/', authenticateToken, async (req, res, next) => {
+  try {
+    const {
+      date,
+      status,
+      client_id,
+      provider_id,
+      page = 1,
+      limit = 10
+    } = req.query;
+
+    // Validate pagination parameters
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = `
+      SELECT a.*, 
+             CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+             COALESCE(s.name, 'Unknown Service') as service_name,
+             sv.name as variant_name,
+             COALESCE(sp.name, 'Unassigned') as provider_name,
+             c.email as client_email,
+             c.phone as client_phone
+      FROM appointments a
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN services s ON a.service_id = s.id
+      LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+      LEFT JOIN service_providers sp ON a.provider_id = sp.id
+      WHERE a.company_id = ?
+    `;
+
+    const params = [req.user.company_id];
+
+    // Add filters with proper validation
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      query += ` AND DATE(a.start_time) = ?`;
+      params.push(date);
+    }
+
+    if (status && ['scheduled', 'confirmed', 'in_progress', 'completed', 'cancelled', 'no_show'].includes(status)) {
+      query += ` AND a.status = ?`;
+      params.push(status);
+    }
+
+    if (client_id && !isNaN(parseInt(client_id))) {
+      query += ` AND a.client_id = ?`;
+      params.push(parseInt(client_id));
+    }
+
+    if (provider_id && !isNaN(parseInt(provider_id))) {
+      query += ` AND a.provider_id = ?`;
+      params.push(parseInt(provider_id));
+    }
+
+    // Get total count for pagination
+    const countQuery = query.replace(/SELECT a\.\*.*?FROM/, 'SELECT COUNT(*) as total FROM');
+    const [countResult] = await db.execute(countQuery, params);
+    const total = countResult[0].total;
+
+    // Add ordering and pagination
+    query += ` ORDER BY a.start_time ASC LIMIT ? OFFSET ?`;
+    params.push(limitNum, offset);
+
+    const [appointments] = await db.execute(query, params);
+
+    res.json({
+      appointments,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching appointments:', error);
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /appointments:
+ *   post:
+ *     summary: Create new appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             client_id: 1
+ *             service_id: 1
+ *             service_variant_id: 1
+ *             provider_id: 5
+ *             user_id: 1
+ *             start_time: "2024-12-15T10:00:00Z"
+ *             end_time: "2024-12-15T11:00:00Z"
+ *             status: "scheduled"
+ *             notes: "Regular checkup appointment"
+ *     responses:
+ *       201:
+ *         description: Appointment created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment created successfully"
+ *                 appointment:
+ *                   $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/', authenticateToken, validate(schemas.appointment), async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // Validate required fields
+    const { client_id, service_id, start_time, status } = req.body;
+
+    if (!client_id || !service_id || !start_time || !status) {
+      return res.status(400).json({
+        error: 'Missing required fields: client_id, service_id, start_time, status'
+      });
+    }
+
+    // Validate date format
+    if (isNaN(Date.parse(start_time))) {
+      return res.status(400).json({ error: 'Invalid start_time format' });
+    }
+
+    // Check if client exists
+    const [clientCheck] = await connection.execute(
+      'SELECT id FROM clients WHERE id = ? AND company_id = ?',
+      [client_id, req.user.company_id]
+    );
+
+    if (clientCheck.length === 0) {
+      return res.status(400).json({ error: 'Client not found' });
+    }
+
+    // Check if service exists
+    const [serviceCheck] = await connection.execute(
+      'SELECT id FROM services WHERE id = ? AND company_id = ?',
+      [service_id, req.user.company_id]
+    );
+
+    if (serviceCheck.length === 0) {
+      return res.status(400).json({ error: 'Service not found' });
+    }
+
+    const appointmentData = {
+      ...req.body,
+      company_id: req.user.company_id,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    // Remove undefined values
+    Object.keys(appointmentData).forEach(key => {
+      if (appointmentData[key] === undefined) {
+        delete appointmentData[key];
+      }
+    });
+
+    const fields = Object.keys(appointmentData);
+    const values = Object.values(appointmentData);
+    const placeholders = fields.map(() => '?').join(', ');
+
+    const [result] = await connection.execute(
+      `INSERT INTO appointments (${fields.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
+
+    // Fetch the created appointment with all related data
+    const [newAppointment] = await connection.execute(
+      `SELECT a.*, 
+              CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+              COALESCE(s.name, 'Unknown Service') as service_name,
+              sv.name as variant_name,
+              COALESCE(sp.name, 'Unassigned') as provider_name,
+              c.email as client_email,
+              c.phone as client_phone,
+              CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) as user_name,
+              u.id as user_id
+       FROM appointments a
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN service_providers sp ON a.provider_id = sp.id
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE a.id = ?`,
+      [result.insertId]
+    );
+
+    await connection.commit();
+
+    const appointment = newAppointment[0];
+    const companyEmailConfig = await getCompanyEmailConfig(req.user.company_id, connection);
+
+    // Send email notification (async, don't wait for it)
+    setImmediate(() => {
+      sendAppointmentEmail(appointment, companyEmailConfig.to_emails, companyEmailConfig, 'created');
+    });
+
+    res.status(201).json({
+      message: 'Appointment created successfully',
+      appointment
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error creating appointment:', error);
+
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'Appointment conflict detected' });
+    }
+
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   put:
+ *     summary: Update appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             client_id: 1
+ *             service_id: 1
+ *             service_variant_id: 1
+ *             provider_id: 1
+ *             start_time: "2024-12-15T14:00:00Z"
+ *             end_time: "2024-12-15T15:00:00Z"
+ *             status: "confirmed"
+ *             notes: "Updated appointment time"
+ *             price: 175.00
+ *             discount: 25.00
+ *             payment_status: "paid"
+ *     responses:
+ *       200:
+ *         description: Appointment updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment updated successfully"
+ *                 appointment:
+ *                   $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.put('/:id', authenticateToken, validate(schemas.appointment), async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    // Check if appointment exists
+    const [existingAppointment] = await connection.execute(
+      'SELECT * FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    if (existingAppointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Validate foreign key constraints if provided
+    if (req.body.client_id) {
+      const [clientCheck] = await connection.execute(
+        'SELECT id FROM clients WHERE id = ? AND company_id = ?',
+        [req.body.client_id, req.user.company_id]
+      );
+
+      if (clientCheck.length === 0) {
+        return res.status(400).json({ error: 'Client not found' });
+      }
+    }
+
+    if (req.body.service_id) {
+      const [serviceCheck] = await connection.execute(
+        'SELECT id FROM services WHERE id = ? AND company_id = ?',
+        [req.body.service_id, req.user.company_id]
+      );
+
+      if (serviceCheck.length === 0) {
+        return res.status(400).json({ error: 'Service not found' });
+      }
+    }
+
+    // Validate date format if provided
+    if (req.body.start_time && isNaN(Date.parse(req.body.start_time))) {
+      return res.status(400).json({ error: 'Invalid start_time format' });
+    }
+
+    if (req.body.end_time && isNaN(Date.parse(req.body.end_time))) {
+      return res.status(400).json({ error: 'Invalid end_time format' });
+    }
+
+    // Remove undefined values and add updated_at
+    const updateData = { ...req.body, updated_at: new Date() };
+    Object.keys(updateData).forEach(key => {
+      if (updateData[key] === undefined) {
+        delete updateData[key];
+      }
+    });
+
+    if (Object.keys(updateData).length === 1) { // Only updated_at
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    const fields = Object.keys(updateData);
+    const values = Object.values(updateData);
+    const setClause = fields.map(field => `${field} = ?`).join(', ');
+
+    const [result] = await connection.execute(
+      `UPDATE appointments SET ${setClause} WHERE id = ? AND company_id = ?`,
+      [...values, appointmentId, req.user.company_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Appointment not found or no changes made' });
+    }
+
+    // Fetch updated appointment with all related data
+    const [updatedAppointment] = await connection.execute(
+      `SELECT a.*, 
+              CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+              COALESCE(s.name, 'Unknown Service') as service_name,
+              sv.name as variant_name,
+              COALESCE(sp.name, 'Unassigned') as provider_name,
+              c.email as client_email,
+              c.phone as client_phone
+       FROM appointments a
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN service_providers sp ON a.provider_id = sp.id
+       WHERE a.id = ?`,
+      [appointmentId]
+    );
+
+    await connection.commit();
+
+    const appointment = updatedAppointment[0];
+
+    // Send email notification (async, don't wait for it)
+    setImmediate(() => {
+      sendAppointmentEmail(appointment, 'updated');
+    });
+
+    res.json({
+      message: 'Appointment updated successfully',
+      appointment
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error updating appointment:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   get:
+ *     summary: Get single appointment by ID
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     responses:
+ *       200:
+ *         description: Appointment found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    const [appointment] = await db.execute(
+      `SELECT a.*, 
+              CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+              COALESCE(s.name, 'Unknown Service') as service_name,
+              sv.name as variant_name,
+              COALESCE(sp.name, 'Unassigned') as provider_name,
+              c.email as client_email,
+              c.phone as client_phone
+       FROM appointments a
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN service_providers sp ON a.provider_id = sp.id
+       WHERE a.id = ? AND a.company_id = ?`,
+      [appointmentId, req.user.company_id]
+    );
+
+    if (appointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    res.json({ appointment: appointment[0] });
+  } catch (error) {
+    console.error('Error fetching appointment:', error);
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   delete:
+ *     summary: Delete appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     responses:
+ *       200:
+ *         description: Appointment deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment deleted successfully"
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.delete('/:id', authenticateToken, async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    // Check if appointment exists before deleting
+    const [existingAppointment] = await connection.execute(
+      'SELECT * FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    if (existingAppointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const [result] = await connection.execute(
+      'DELETE FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    await connection.commit();
+
+    res.json({ message: 'Appointment deleted successfully' });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error deleting appointment:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/bulk:
+ *   post:
+ *     summary: Create multiple appointments
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               appointments:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             appointments:
+ *               - client_id: 1
+ *                 service_id: 1
+ *                 start_time: "2024-12-15T10:00:00Z"
+ *                 status: "scheduled"
+ *               - client_id: 2
+ *                 service_id: 2
+ *                 start_time: "2024-12-15T11:00:00Z"
+ *                 status: "scheduled"
+ *     responses:
+ *       201:
+ *         description: Appointments created successfully
+ *       400:
+ *         description: Invalid request data
+ */
+router.post('/bulk', authenticateToken, async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { appointments } = req.body;
+
+    if (!Array.isArray(appointments) || appointments.length === 0) {
+      return res.status(400).json({ error: 'Invalid appointments array' });
+    }
+
+    if (appointments.length > 50) {
+      return res.status(400).json({ error: 'Maximum 50 appointments allowed per bulk operation' });
+    }
+
+    const createdAppointments = [];
+    const errors = [];
+
+    for (let i = 0; i < appointments.length; i++) {
+      try {
+        const appointment = appointments[i];
+
+        // Validate required fields
+        if (!appointment.client_id || !appointment.service_id || !appointment.start_time || !appointment.status) {
+          errors.push({ index: i, error: 'Missing required fields' });
+          continue;
+        }
+
+        const appointmentData = {
+          ...appointment,
+          company_id: req.user.company_id,
+          created_at: new Date(),
+          updated_at: new Date()
+        };
+
+        Object.keys(appointmentData).forEach(key => {
+          if (appointmentData[key] === undefined) {
+            delete appointmentData[key];
+          }
+        });
+
+        const fields = Object.keys(appointmentData);
+        const values = Object.values(appointmentData);
+        const placeholders = fields.map(() => '?').join(', ');
+
+        const [result] = await connection.execute(
+          `INSERT INTO appointments (${fields.join(', ')}) VALUES (${placeholders})`,
+          values
+        );
+
+        createdAppointments.push({ index: i, id: result.insertId });
+
+      } catch (error) {
+        errors.push({ index: i, error: error.message });
+      }
+    }
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: `${createdAppointments.length} appointments created successfully`,
+      created: createdAppointments,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error creating bulk appointments:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/stats:
+ *   get:
+ *     summary: Get appointment statistics
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [today, week, month, year]
+ *         description: Statistics period
+ *         example: "month"
+ *     responses:
+ *       200:
+ *         description: Appointment statistics
+ */
+router.get('/stats', authenticateToken, async (req, res, next) => {
+  try {
+    const { period = 'month' } = req.query;
+
+    let dateFilter = '';
+    switch (period) {
+      case 'today':
+        dateFilter = 'DATE(a.start_time) = CURDATE()';
+        break;
+      case 'week':
+        dateFilter = 'a.start_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
+        break;
+      case 'month':
+        dateFilter = 'a.start_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
+        break;
+      case 'year':
+        dateFilter = 'a.start_time >= DATE_SUB(NOW(), INTERVAL 365 DAY)';
+        break;
+      default:
+        dateFilter = '1=1';
+    }
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_appointments,
+        COUNT(CASE WHEN a.status = 'scheduled' THEN 1 END) as scheduled,
+        COUNT(CASE WHEN a.status = 'confirmed' THEN 1 END) as confirmed,
+        COUNT(CASE WHEN a.status = 'completed' THEN 1 END) as completed,
+        COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled,
+        COUNT(CASE WHEN a.status = 'no_show' THEN 1 END) as no_show,
+        COALESCE(AVG(a.price), 0) as average_price,
+        COALESCE(SUM(a.price), 0) as total_revenue
+      FROM appointments a
+      WHERE a.company_id = ? AND ${dateFilter}
+    `, [req.user.company_id]);
+
+    res.json({ stats: stats[0] });
+
+  } catch (error) {
+    console.error('Error fetching appointment stats:', error);
+    next(error);
+  }
+});
+
+module.exports = router;

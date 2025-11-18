@@ -1,0 +1,35 @@
+-- --
+-- -- Table structure for table `client_analytics`
+-- --
+-- CREATE TABLE `client_analytics` (
+--   `id` int(11) NOT NULL,
+--   `company_id` int(11) NOT NULL,
+--   `client_id` int(11) NOT NULL,
+--   `action_type` varchar(20) NOT NULL,
+--   `action_data` JSON DEFAULT NULL,
+--   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+--   `updated_at` timestamp NULL DEFAULT NULL ON UPDATE current_timestamp()
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+
+-- --
+-- -- Table structure for table `meeting_sheets`
+-- --
+-- CREATE TABLE `meeting_sheets` (
+--   `id` int(11) NOT NULL,
+--  ` appointment_id` int(11) NOT NULL,
+--   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+--   `updated_at` timestamp NULL DEFAULT NULL ON UPDATE current_timestamp()
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --
+-- -- Table structure for table `meeting_table`
+-- --
+-- CREATE TABLE `meeting_table` (
+--   `id` int(11) NOT NULL,
+--   `appointment_id` int(11) NOT NULL,
+--   `meeting_link` varchar(250) NOT NULL,
+--   `status` varchar(50) NOT NULL
+--   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+--   `updated_at` timestamp NULL DEFAULT NULL ON UPDATE current_timestamp()
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

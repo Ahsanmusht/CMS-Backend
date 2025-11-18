@@ -1,0 +1,48 @@
+const express = require('express');
+const authRoutes = require('./auth');
+// const ownerRoutes = require('./owners');
+const companyRoutes = require('./companies');
+const clientRoutes = require('./clients');
+const serviceRoutes = require('./services');
+const appointmentRoutes = require('./appointments');
+const paymentRoutes = require('./payments');
+const policyRoutes = require('./policies');
+const workOrderRoutes = require('./workOrder');
+const userRoutes = require('./users');
+const supplierRoutes = require('./supplierRoutes');
+const productRoutes = require('./productRoutes');
+const inventoryRoutes = require('./inventoryRoutes');
+const orderRoutes = require('./orderRoutes');
+const billRoutes = require('./billRoutes');
+const employeeRoutes = require('./employeeRoutes');
+const salaryRoutes = require('./salaryRoutes');
+const emailRoutes = require('./emailRoutes');
+const contactRoutes = require('./contactRoutes');
+// const documentRoutes = require('./documents');
+// const notificationRoutes = require('./notifications');
+
+const router = express.Router();
+
+router.use('/auth', authRoutes);
+// router.use('/owners', ownerRoutes);
+router.use('/companies', companyRoutes);
+router.use('/clients', clientRoutes);
+router.use('/services', serviceRoutes);
+router.use('/appointments', appointmentRoutes);
+router.use('/payments', paymentRoutes);
+router.use('/policies', policyRoutes);
+router.use('/work-orders', workOrderRoutes);
+router.use('/users', userRoutes);
+router.use('/suppliers', supplierRoutes);
+router.use('/products', productRoutes);
+router.use('/inventory', inventoryRoutes);
+router.use('/orders', orderRoutes);
+router.use('/bills', billRoutes);
+router.use('/employees', employeeRoutes);
+router.use('/salaries', salaryRoutes);
+router.use('/emails', emailRoutes);
+router.use('/contact', contactRoutes);
+// router.use('/documents', documentRoutes);
+// router.use('/notifications', notificationRoutes);
+
+module.exports = router;

@@ -1,0 +1,560 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const db = require('../config/database');
+const { validate, schemas } = require('../middleware/validation');
+const { validateProfileToken } = require('../middleware/profileToken');
+
+const router = express.Router();
+
+/**
+ * @swagger
+ * /auth/register-owner:
+ *   post:
+ *     summary: Register a new business owner
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Owner registered successfully
+ *       400:
+ *         description: Validation error
+ *       409:
+ *         description: Email already exists
+ */
+router.post('/register-owner', validate(schemas.owner), async (req, res, next) => {
+  try {
+    const { name, email, password } = req.body;
+    
+    // Check if email already exists in either table
+    const [existingOwners] = await db.execute('SELECT id FROM owners WHERE email = ?', [email]);
+    const [existingUsers] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
+    
+    if (existingOwners.length > 0 || existingUsers.length > 0) {
+      return res.status(409).json({ error: 'Email already exists' });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    const [result] = await db.execute(
+      'INSERT INTO owners (name, email, password_hash) VALUES (?, ?, ?)',
+      [name, email, hashedPassword]
+    );
+
+    const token = jwt.sign(
+      { 
+        id: result.insertId, 
+        email,
+        userType: 'owner',
+        name
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN }
+    );
+
+    res.status(201).json({
+      message: 'Owner registered successfully',
+      token,
+      user: { 
+        id: result.insertId, 
+        name, 
+        email, 
+        userType: 'owner'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/register-user:
+ *   post:
+ *     summary: Register a new company user
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               first_name:
+ *                 type: string
+ *               last_name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               company_id:
+ *                 type: integer
+ *     responses:
+ *       201:
+ *         description: User registered successfully
+ *       400:
+ *         description: Validation error
+ *       409:
+ *         description: Email already exists
+ */
+router.post('/register-user', validate(schemas.user), async (req, res, next) => {
+  try {
+    const { first_name, last_name, email, password, company_id } = req.body;
+    
+    // Check if email already exists in either table
+    const [existingOwners] = await db.execute('SELECT id FROM owners WHERE email = ?', [email]);
+    const [existingUsers] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
+    
+    if (existingOwners.length > 0 || existingUsers.length > 0) {
+      return res.status(409).json({ error: 'Email already exists' });
+    }
+
+    // Verify company exists
+    const [companies] = await db.execute('SELECT id, name FROM companies WHERE id = ?', [company_id]);
+    if (!companies.length) {
+      return res.status(400).json({ error: 'Invalid company ID' });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    const [result] = await db.execute(
+      'INSERT INTO users (first_name, last_name, email, password_hash, company_id, is_active) VALUES (?, ?, ?, ?, ?, 1)',
+      [first_name, last_name, email, hashedPassword, company_id]
+    );
+
+    const token = jwt.sign(
+      { 
+        id: result.insertId, 
+        email,
+        userType: 'user',
+        companyId: company_id,
+        firstName: first_name,
+        lastName: last_name
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN }
+    );
+
+    res.status(201).json({
+      message: 'User registered successfully',
+      token,
+      user: {
+        id: result.insertId,
+        first_name,
+        last_name,
+        email,
+        company_id,
+        company_name: companies[0].name,
+        userType: 'user'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Universal login for both owners and users
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *       401:
+ *         description: Invalid credentials
+ */
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    let user = null;
+    let userType = null;
+    
+    // First check in owners table
+    const [owners] = await db.execute(
+      'SELECT id, name, email, password_hash FROM owners WHERE email = ?',
+      [email]
+    );
+
+    if (owners.length > 0) {
+      user = owners[0];
+      userType = 'owner';
+    } else {
+      // Check in users table
+      const [users] = await db.execute(
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.company_id, u.password_hash, u.is_active,
+                c.name as company_name
+         FROM users u 
+         JOIN companies c ON u.company_id = c.id 
+         WHERE u.email = ?`,
+        [email]
+      );
+
+      if (users.length > 0) {
+        user = users[0];
+        userType = 'user';
+        
+        // Check if user is active
+        if (!user.is_active) {
+          return res.status(401).json({ error: 'Account is deactivated. Please contact your administrator.' });
+        }
+      }
+    }
+
+    // If no user found in either table
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+console.log(password, user.password_hash);
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    console.log(isValidPassword);
+    
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Update last login for users (not owners)
+    if (userType === 'user') {
+      await db.execute(
+        'UPDATE users SET last_login_at = NOW() WHERE id = ?',
+        [user.id]
+      );
+    }
+
+    // Create JWT token with appropriate payload
+    let tokenPayload = {
+      id: user.id,
+      email: user.email,
+      userType
+    };
+
+    let responseUser = {
+      id: user.id,
+      email: user.email,
+      userType
+    };
+
+    if (userType === 'owner') {
+      tokenPayload.name = user.name;
+      responseUser.name = user.name;
+    } else {
+      tokenPayload.companyId = user.company_id;
+      tokenPayload.firstName = user.first_name;
+      tokenPayload.lastName = user.last_name;
+      
+      responseUser.first_name = user.first_name;
+      responseUser.last_name = user.last_name;
+      responseUser.company_id = user.company_id;
+      responseUser.company_name = user.company_name;
+    }
+
+    const token = jwt.sign(
+      tokenPayload,
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN }
+    );
+
+    res.json({
+      message: 'Login successful',
+      token,
+      user: responseUser
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/me:
+ *   get:
+ *     summary: Get current user profile
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User profile retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/me', async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ error: 'Access token required' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    let user = null;
+    
+    if (decoded.userType === 'owner') {
+      const [owners] = await db.execute(
+        'SELECT id, name, email FROM owners WHERE id = ?',
+        [decoded.id]
+      );
+      
+      if (owners.length > 0) {
+        user = {
+          ...owners[0],
+          userType: 'owner'
+        };
+      }
+    } else {
+      const [users] = await db.execute(
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.company_id, u.is_active,
+                c.name as company_name
+         FROM users u 
+         JOIN companies c ON u.company_id = c.id 
+         WHERE u.id = ? AND u.is_active = 1`,
+        [decoded.id]
+      );
+      
+      if (users.length > 0) {
+        user = {
+          ...users[0],
+          userType: 'user'
+        };
+      }
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'User not found or inactive' });
+    }
+
+    res.json({ user });
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    next(error);
+  }
+});
+
+router.get('/complete-profile', validateProfileToken, async (req, res) => {
+  try {
+    const user = req.user;
+
+    res.status(200).json({
+      message: 'Token valid',
+      user: {
+        id: user.user_id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        phone: user.phone,
+        company_id: user.company_id,
+        token_expires_at: user.expires_at
+      },
+    });
+
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+    res.status(500).json({ error: 'Failed to fetch user data' });
+  }
+});
+
+// Complete user profile
+router.post('/complete-profile', validateProfileToken, async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { 
+      password, 
+      confirm_password, 
+      first_name, 
+      last_name
+    } = req.body;
+
+    const user = req.user;
+    const token = req.token;
+
+    // Validate required fields
+    if (!password || password.length < 6) {
+      return res.status(400).json({ 
+        error: 'Password is required and must be at least 6 characters' 
+      });
+    }
+
+    if (password !== confirm_password) {
+      return res.status(400).json({ error: 'Passwords do not match' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Update user profile
+    const updateData = {
+      password: hashedPassword,
+      first_name: first_name || user.first_name,
+      last_name: last_name || user.last_name,
+      is_active: 1, // Activate user
+      updated_at: new Date()
+    };
+
+    await connection.execute(
+      `UPDATE users SET 
+       password_hash = ?, first_name = ?, last_name = ?, 
+        is_active = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        updateData.password,
+        updateData.first_name,
+        updateData.last_name,
+        updateData.is_active,
+        updateData.updated_at,
+        user.user_id
+      ]
+    );
+
+    // Mark token as used
+    await connection.execute(
+      'UPDATE user_profile_tokens SET is_used = 1, updated_at = NOW() WHERE token = ?',
+      [token]
+    );
+
+    await connection.commit();
+
+    res.status(200).json({
+      message: 'Profile completed successfully',
+      user: {
+        id: user.user_id,
+        email: user.email,
+        first_name: updateData.first_name,
+        last_name: updateData.last_name,
+        phone: updateData.phone,
+        is_active: true
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error completing profile:', error);
+    res.status(500).json({ error: 'Failed to complete profile' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Check token status (for frontend to show appropriate messages)
+router.get('/check-token/:token', async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { token } = req.params;
+
+    const [tokens] = await connection.execute(
+      `SELECT t.expires_at, t.is_used, u.is_active, u.email
+       FROM user_profile_tokens t
+       JOIN users u ON t.user_id = u.id
+       WHERE t.token = ?`,
+      [token]
+    );
+
+    if (tokens.length === 0) {
+      return res.status(404).json({ 
+        error: 'Token not found',
+        status: 'invalid'
+      });
+    }
+
+    const tokenData = tokens[0];
+    const now = new Date();
+    const expiresAt = new Date(tokenData.expires_at);
+
+    if (tokenData.is_used === 1) {
+      return res.status(400).json({
+        error: 'Token already used',
+        status: 'used'
+      });
+    }
+
+    if (expiresAt < now) {
+      return res.status(400).json({
+        error: 'Token expired',
+        status: 'expired',
+        expired_at: tokenData.expires_at
+      });
+    }
+
+    if (tokenData.is_active === 1) {
+      return res.status(400).json({
+        error: 'Profile already completed',
+        status: 'completed'
+      });
+    }
+
+    res.status(200).json({
+      message: 'Token is valid',
+      status: 'valid',
+      expires_at: tokenData.expires_at,
+      email: tokenData.email
+    });
+
+  } catch (error) {
+    console.error('Error checking token:', error);
+    res.status(500).json({ error: 'Failed to check token' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Cleanup expired tokens (optional cron job endpoint)
+router.delete('/cleanup-expired-tokens', async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const [result] = await connection.execute(
+      'DELETE FROM user_profile_tokens WHERE expires_at < NOW() AND is_used = 0'
+    );
+
+    res.status(200).json({
+      message: 'Expired tokens cleaned up',
+      deleted_count: result.affectedRows
+    });
+
+  } catch (error) {
+    console.error('Error cleaning up tokens:', error);
+    res.status(500).json({ error: 'Failed to cleanup tokens' });
+  } finally {
+    connection.release();
+  }
+});
+
+module.exports = router;

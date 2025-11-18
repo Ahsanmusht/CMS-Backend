@@ -1,0 +1,164 @@
+const express = require('express');
+const db = require('../config/database');
+const { authenticateToken } = require('../middleware/auth');
+const { validate, schemas } = require('../middleware/validation');
+
+const router = express.Router();
+
+/**
+ * @swagger
+ * /services:
+ *   get:
+ *     summary: Get all services
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: company_id
+ *         schema:
+ *           type: integer
+ *         required: true
+ *         description: ID of the company to retrieve services for
+ *     responses:
+ *       200:
+ *         description: List of services
+ */
+// authenticateToken
+router.get('/', async (req, res, next) => {
+  try {
+    const [services] = await db.execute(
+      `SELECT s.*, sc.name as category_name 
+       FROM services s 
+       LEFT JOIN service_categories sc ON s.category_id = sc.id 
+       WHERE s.company_id = ? AND s.is_active = 1
+       ORDER BY s.name`,
+      [req.query.company_id]
+    );
+    
+    res.json({ services });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /services:
+ *   post:
+ *     summary: Create new service
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       201:
+ *         description: Service created successfully
+ */
+router.post('/', authenticateToken, validate(schemas.service), async (req, res, next) => {
+  try {
+    const serviceData = { ...req.body, company_id: req.user.company_id };
+    
+    const fields = Object.keys(serviceData);
+    const values = Object.values(serviceData);
+    const placeholders = fields.map(() => '?').join(', ');
+    
+    const [result] = await db.execute(
+      `INSERT INTO services (${fields.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
+    
+    const [newService] = await db.execute(
+      'SELECT * FROM services WHERE id = ?',
+      [result.insertId]
+    );
+    
+    res.status(201).json({
+      message: 'Service created successfully',
+      service: newService[0]
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /services/{id}:
+ *   put:
+ *     summary: Update service
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Service updated successfully
+ */
+router.put('/:id', authenticateToken, validate(schemas.service), async (req, res, next) => {
+  try {
+    const fields = Object.keys(req.body);
+    const values = Object.values(req.body);
+    const setClause = fields.map(field => `${field} = ?`).join(', ');
+    
+    const [result] = await db.execute(
+      `UPDATE services SET ${setClause} WHERE id = ? AND company_id = ?`,
+      [...values, req.params.id, req.user.company_id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    
+    res.json({ message: 'Service updated successfully' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /services/{id}:
+ *   delete:
+ *     summary: Delete service (soft delete)
+ *     tags: [Services]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Service deleted successfully
+ */
+router.delete('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const [result] = await db.execute(
+      'UPDATE services SET is_active = 0 WHERE id = ? AND company_id = ?',
+      [req.params.id, req.user.company_id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    
+    res.json({ message: 'Service deleted successfully' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+module.exports = router;

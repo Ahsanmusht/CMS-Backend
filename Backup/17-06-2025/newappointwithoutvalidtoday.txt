@@ -1,0 +1,2166 @@
+const express = require('express');
+const nodemailer = require('nodemailer');
+const db = require('../config/database');
+const { authenticateToken } = require('../middleware/auth');
+const { validate, schemas } = require('../middleware/validation');
+const router = express.Router();
+const crypto = require('crypto');
+const { getTimeRemainingString } = require('../utils/utils')
+
+async function prepareEmailRecipients(companyEmailConfig, clientEmail) {
+  let recipients = [];
+
+  // Add company emails
+  if (companyEmailConfig && companyEmailConfig.to_emails) {
+    try {
+      if (Array.isArray(companyEmailConfig.to_emails)) {
+        recipients = [...companyEmailConfig.to_emails];
+      } else if (typeof companyEmailConfig.to_emails === 'string') {
+        const parsedEmails = JSON.parse(companyEmailConfig.to_emails);
+        recipients = Array.isArray(parsedEmails) ? parsedEmails : [companyEmailConfig.to_emails];
+      }
+    } catch (parseError) {
+      console.warn('Failed to parse company emails:', parseError);
+      if (typeof companyEmailConfig.to_emails === 'string') {
+        recipients = [companyEmailConfig.to_emails];
+      }
+    }
+  }
+
+  // Add client email
+  if (clientEmail && clientEmail.trim()) {
+    recipients.push(clientEmail.trim());
+  }
+
+  // Clean and deduplicate emails
+  return [...new Set(recipients)]
+    .filter(email => email && email.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+    .map(email => email.trim().toLowerCase());
+}
+const splitFullName = (fullName) => {
+  if (!fullName || typeof fullName !== 'string') {
+    return { first_name: null, last_name: null };
+  }
+
+  const nameParts = fullName.trim().split(' ').filter(part => part.length > 0);
+
+  if (nameParts.length === 0) {
+    return { first_name: null, last_name: null };
+  } else if (nameParts.length === 1) {
+    return { first_name: nameParts[0], last_name: null };
+  } else {
+    return {
+      first_name: nameParts[0],
+      last_name: nameParts.slice(1).join(' ')
+    };
+  }
+};
+const generateCompleteProfileToken = () => {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
+  return { token, expiresAt };
+};
+const getCompleteProfileEmailTemplate = (user, token, companyName, logo, frontend_url, expiresAt) => {
+  const baseFrontendUrl =
+    process.env.NODE_ENV === 'production' ? frontend_url : process.env.FRONTEND_URL;
+
+  const completeProfileUrl = `${baseFrontendUrl}/completeprofile?token=${token}`;
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Complete Your Profile - ${companyName}</title>
+        <style>
+            * { 
+                margin: 0; 
+                padding: 0; 
+                box-sizing: border-box;
+                font-family: Tahoma, Geneva, sans-serif; 
+            }
+            
+            body { 
+                line-height: 1.6; 
+                color: #333333;
+                background-color: #f8f9fa;
+                margin: 0; 
+                padding: 0; 
+            }
+            
+            .email-container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            }
+            
+            /* Header Section */
+            .header {
+                background: #2563eb;
+                padding: 40px 30px;
+                text-align: center;
+                color: white;
+            }
+            
+            .logo-section {
+                margin-bottom: 20px;
+            }
+            
+            .company-logo {
+                max-width: 180px;
+                max-height: 50px;
+                height: auto;
+                display: inline-block;
+                background-color: rgba(255, 255, 255, 0.9);
+                padding: 8px 16px;
+                border-radius: 6px;
+            }
+            
+            .header-title {
+                font-size: 24px;
+                font-weight: 600;
+                margin: 0;
+                letter-spacing: -0.25px;
+            }
+            
+            .header-subtitle {
+                font-size: 16px;
+                margin: 8px 0 0 0;
+                opacity: 0.9;
+                font-weight: 400;
+            }
+            
+            /* Content Section */
+            .content {
+                padding: 40px 30px;
+            }
+            
+            .greeting {
+                text-align: center;
+                margin-bottom: 35px;
+            }
+            
+            .greeting-title {
+                font-size: 22px;
+                font-weight: 600;
+                color: #1f2937;
+                margin-bottom: 10px;
+            }
+            
+            .greeting-text {
+                font-size: 16px;
+                color: #6b7280;
+                line-height: 1.5;
+            }
+            
+            /* Profile Information Card */
+            .profile-card {
+                background-color: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 25px;
+                margin: 30px 0;
+            }
+            
+            .profile-card-title {
+                font-size: 18px;
+                font-weight: 600;
+                color: #374151;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+            }
+            
+            .profile-card-title::before {
+                content: "👤";
+                margin-right: 8px;
+            }
+            
+            .profile-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 0;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            
+            .profile-item:last-child {
+                border-bottom: none;
+            }
+            
+            .profile-label {
+                font-weight: 500;
+                color: #374151;
+                font-size: 14px;
+            }
+            
+            .profile-value {
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 400;
+            }
+            
+            /* Call to Action Button */
+            .cta-section {
+                text-align: center;
+                margin: 35px 0;
+            }
+            
+            .cta-button {
+                display: inline-block;
+                background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+                color: white !important;
+                text-decoration: none;
+                padding: 14px 32px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 16px;
+                box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+                transition: all 0.2s ease;
+            }
+            
+            .cta-button:hover {
+                box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+                transform: translateY(-1px);
+            }
+            
+            /* Warning Alert */
+            .alert-warning {
+                background-color: #fef3c7;
+                border-left: 4px solid #f59e0b;
+                padding: 16px;
+                margin: 25px 0;
+                border-radius: 4px;
+            }
+            
+            .alert-content {
+                display: flex;
+                align-items: flex-start;
+            }
+            
+            .alert-icon {
+                color: #d97706;
+                margin-right: 10px;
+                font-weight: bold;
+                flex-shrink: 0;
+            }
+            
+            .alert-text {
+                color: #92400e;
+                font-size: 14px;
+                line-height: 1.4;
+            }
+            
+            .alert-title {
+                font-weight: 600;
+                margin-bottom: 4px;
+            }
+            
+            /* Alternative Link Section */
+            .link-alternative {
+                background-color: #f3f4f6;
+                padding: 20px;
+                border-radius: 6px;
+                margin: 25px 0;
+            }
+            
+            .link-alternative-title {
+                font-size: 14px;
+                font-weight: 500;
+                color: #374151;
+                margin-bottom: 8px;
+            }
+            
+            .link-alternative-url {
+                background-color: white;
+                border: 1px solid #d1d5db;
+                padding: 10px;
+                border-radius: 4px;
+                word-break: break-all;
+                font-size: 13px;
+                color: #2563eb;
+                text-decoration: none;
+                display: block;
+            }
+            
+            /* Footer */
+            .footer {
+                background-color: #1f2937;
+                color: #d1d5db;
+                padding: 30px;
+                text-align: center;
+            }
+            
+            .footer-logo {
+                max-width: 120px;
+                max-height: 35px;
+                height: auto;
+                margin-bottom: 15px;
+                opacity: 0.8;
+                background-color: rgba(255, 255, 255, 0.9);
+                padding: 6px 12px;
+                border-radius: 4px;
+            }
+            
+            .footer-text {
+                font-size: 14px;
+                margin: 5px 0;
+                line-height: 1.4;
+            }
+            
+            .footer-main {
+                font-weight: 500;
+                color: #f9fafb;
+            }
+            
+            .footer-sub {
+                opacity: 0.7;
+            }
+            
+            /* Divider */
+            .divider {
+                height: 1px;
+                background-color: #e5e7eb;
+                margin: 30px 0;
+            }
+            
+            /* Responsive Design */
+            @media (max-width: 640px) {
+                .email-container {
+                    margin: 0;
+                    box-shadow: none;
+                }
+                
+                .header,
+                .content,
+                .footer {
+                    padding: 25px 20px;
+                }
+                
+                .header-title {
+                    font-size: 20px;
+                }
+                
+                .greeting-title {
+                    font-size: 20px;
+                }
+                
+                .cta-button {
+                    padding: 12px 24px;
+                    font-size: 15px;
+                }
+                
+                .profile-card {
+                    padding: 20px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <!-- Header Section -->
+            <div class="header">
+                ${logo ? `
+                    <div class="logo-section">
+                        <img src="${logo}" alt="${companyName}" class="company-logo">
+                    </div>
+                ` : ''}
+                <h1 class="header-title">Complete Your Profile</h1>
+                <p class="header-subtitle">Welcome to ${companyName}</p>
+            </div>
+            
+            <!-- Main Content -->
+            <div class="content">
+                <!-- Greeting Section -->
+                <div class="greeting">
+                    <h2 class="greeting-title">Hello ${user.first_name || 'there'}! 👋</h2>
+                    <p class="greeting-text">
+                        Your appointment has been successfully created. Please complete your profile setup to finalize your registration with us.
+                    </p>
+                </div>
+                
+                <!-- Profile Information -->
+                <div class="profile-card">
+                    <h3 class="profile-card-title">Your Current Information</h3>
+                    <div class="profile-item">
+                        <span class="profile-label">Full Name: </span>
+                        <span class="profile-value"> ${user.first_name || 'N/A'} ${user.last_name || ''}</span>
+                    </div>
+                    <div class="profile-item">
+                        <span class="profile-label">Email Address: </span>
+                        <span class="profile-value"> ${user.email || 'N/A'}</span>
+                    </div>
+                    <div class="profile-item">
+                        <span class="profile-label">Phone Number: </span>
+                        <span class="profile-value"> ${user.phone || 'N/A'}</span>
+                    </div>
+                </div>
+                
+                <!-- Call to Action -->
+                <div class="cta-section">
+                    <a href="${completeProfileUrl}" class="cta-button">
+                        Complete Profile Setup
+                    </a>
+                </div>
+                
+                <!-- Warning Alert -->
+                <div class="alert-warning">
+                    <div class="alert-content">
+                        <span class="alert-icon">⚠️</span>
+                        <div>
+                            <div class="alert-title">Time Sensitive</div>
+                            <div class="alert-text">
+                                This link expires in ${getTimeRemainingString(expiresAt)} for security purposes. Please complete your profile setup promptly.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="divider"></div>
+                
+                <!-- Alternative Link -->
+                <div class="link-alternative">
+                    <div class="link-alternative-title">Click this link:</div>
+                    <a href="${completeProfileUrl}" class="link-alternative-url">${completeProfileUrl}</a>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="footer">
+                ${logo ? `<img src="${logo}" alt="${companyName}" class="footer-logo">` : ''}
+                <p class="footer-text footer-main">© ${new Date().getFullYear()} ${companyName}. All rights reserved.</p>
+                <p class="footer-text footer-sub">
+                    This is an automated message. Please do not reply to this email.
+                </p>
+                <p class="footer-text footer-sub">
+                    Need assistance? Contact our support team.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+};
+const sendCompleteProfileEmail = async (user, token, companyName, emailConfig, logo, frontend_url, expiresAt) => {
+  try {
+    const transporter = nodemailer.createTransport(emailConfig);
+
+    const mailOptions = {
+      from: emailConfig.auth.user,
+      to: user.email,
+      subject: `Complete Your Profile - ${companyName}`,
+      html: getCompleteProfileEmailTemplate(user, token, companyName, logo, frontend_url, expiresAt)
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`Complete profile email sent to: ${user.email}`);
+  } catch (error) {
+    console.error('Error sending complete profile email:', error);
+    // Don't crash app, fail silently
+  }
+};
+const getCompanyEmailConfig = async (companyId, connection) => {
+  let secure = true;
+  const [rows] = await connection.execute(
+    `SELECT smtp_host AS host, smtp_port AS port, smtp_user AS user, smtp_pass AS pass, to_emails AS emails
+     FROM companies WHERE id = ? LIMIT 1`,
+    [companyId]
+  );
+
+  if (rows.length === 0) throw new Error('Company SMTP config not found');
+
+  const { host, port, user, pass, emails } = rows[0];
+
+  return {
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+    to_emails: emails
+  };
+};
+const getAppointmentEmailTemplate = (appointment, type = 'created', logo) => {
+  const statusColors = {
+    created: '#28a745',
+    updated: '#ffc107',
+    confirmed: '#007bff',
+    cancelled: '#dc3545'
+  };
+
+  const actionText = type === 'created' ? 'Created' : 'Updated';
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Appointment ${actionText} - ${appointment.company_name || 'Company'}</title>
+        <style>
+            * { 
+                margin: 0; 
+                padding: 0; 
+                box-sizing: border-box; 
+                font-family: Tahoma, Geneva, sans-serif;
+            }
+            
+            body { 
+                line-height: 1.6; 
+                color: #333333;
+                background-color: #f8f9fa;
+                margin: 0; 
+                padding: 0; 
+            }
+            
+            .email-container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            }
+            
+            /* Header Section */
+            .header {
+                background: #2563eb;
+                padding: 40px 30px;
+                text-align: center;
+                color: white;
+            }
+            
+            .logo-section {
+                margin-bottom: 20px;
+            }
+            
+            .company-logo {
+                max-width: 180px;
+                max-height: 50px;
+                height: auto;
+                display: inline-block;
+                background-color: rgba(255, 255, 255, 0.9);
+                padding: 8px 16px;
+                border-radius: 6px;
+            }
+            
+            .header-title {
+                font-size: 24px;
+                font-weight: 600;
+                margin: 8px 0 0 0;
+                letter-spacing: -0.25px;
+                display: flex;
+                align-items: center;
+                text-align: center;
+                justify-content: center;
+                gap: 8px;
+            }
+            
+            .header-subtitle {
+                font-size: 16px;
+                margin: 8px 0 0 0;
+                opacity: 0.9;
+                color: white;
+                font-weight: 400;
+            }
+            
+            /* Content Section */
+            .content {
+                padding: 40px 30px;
+            }
+            
+            .status-announcement {
+                text-align: center;
+                margin-bottom: 35px;
+                padding: 20px;
+                background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+                border-radius: 8px;
+                border-left: 4px solid ${statusColors[type] || '#007bff'};
+            }
+            
+            .status-icon {
+                font-size: 24px;
+                margin-bottom: 10px;
+                display: block;
+            }
+            
+            .status-title {
+                font-size: 18px;
+                font-weight: 600;
+                color: #1f2937;
+                margin-bottom: 5px;
+            }
+            
+            .status-text {
+                font-size: 14px;
+                color: #6b7280;
+            }
+            
+            /* Appointment Details Card */
+            .appointment-card {
+                background-color: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 25px;
+                margin: 30px 0;
+                border-left: 4px solid ${statusColors[type] || '#007bff'};
+            }
+            
+            .card-title {
+                font-size: 18px;
+                font-weight: 600;
+                color: #374151;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .detail-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 0;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            
+            .detail-row:last-child {
+                border-bottom: none;
+            }
+            
+            .detail-label {
+                font-weight: 500;
+                color: #374151;
+                font-size: 14px;
+                min-width: 120px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .detail-value {
+                color: #6b7280;
+                font-size: 14px;
+                font-weight: 400;
+                text-align: right;
+                flex: 1;
+            }
+            
+            .status-badge {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                background-color: ${statusColors[appointment.status] || '#6c757d'};
+                color: white;
+                letter-spacing: 0.5px;
+            }
+            
+            .price-highlight {
+                background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+                color: #065f46;
+                font-weight: 600;
+                padding: 4px 8px;
+                border-radius: 4px;
+                border: 1px solid #a7f3d0;
+            }
+            
+            /* Summary Section */
+            .summary-section {
+                text-align: center;
+                margin: 35px 0;
+                padding: 20px;
+                background-color: #f3f4f6;
+                border-radius: 6px;
+            }
+            
+            .summary-text {
+                color: #6b7280;
+                font-style: italic;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            
+            /* Footer */
+            .footer {
+                background-color: #1f2937;
+                color: #d1d5db;
+                padding: 30px;
+                text-align: center;
+            }
+            
+            .footer-logo {
+                max-width: 120px;
+                max-height: 35px;
+                height: auto;
+                margin-bottom: 15px;
+                opacity: 0.8;
+                background-color: rgba(255, 255, 255, 0.9);
+                padding: 6px 12px;
+                border-radius: 4px;
+            }
+            
+            .footer-text {
+                font-size: 14px;
+                margin: 5px 0;
+                line-height: 1.4;
+            }
+            
+            .footer-main {
+                font-weight: 500;
+                color: #f9fafb;
+            }
+            
+            .footer-sub {
+                opacity: 0.7;
+            }
+            
+            /* Divider */
+            .divider {
+                height: 1px;
+                background-color: #e5e7eb;
+                margin: 30px 0;
+            }
+            
+            /* Responsive Design */
+            @media (max-width: 640px) {
+                .email-container {
+                    margin: 0;
+                    box-shadow: none;
+                }
+                
+                .header,
+                .content,
+                .footer {
+                    padding: 25px 20px;
+                }
+                
+                .header-title {
+                    font-size: 20px;
+                }
+                
+                .appointment-card {
+                    padding: 20px;
+                }
+                
+                .detail-row {
+                    flex-direction: column;
+                    align-items: flex-start;
+                    gap: 5px;
+                }
+                
+                .detail-label {
+                    min-width: auto;
+                }
+                
+                .detail-value {
+                    text-align: left;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <!-- Header Section -->
+            <div class="header">
+                ${logo ? `
+                    <div class="logo-section">
+                        <img src="${logo}" alt="${appointment.company_name || 'Company'}" class="company-logo">
+                    </div>
+                ` : ''}
+                <p class="header-subtitle">Your appointment has been ${type}</p>
+            </div>
+                <!-- Appointment Details -->
+                <div class="appointment-card">
+                    <h3 class="card-title">Appointment Details</h3>
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Client Name:</span>
+                        <span class="detail-value">${appointment.client_name || 'N/A'}</span>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Email:</span>
+                        <span class="detail-value">${appointment.email || 'N/A'}</span>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Phone:</span>
+                        <span class="detail-value">${appointment.phone || 'N/A'}</span>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Service:</span>
+                        <span class="detail-value">${appointment.service_name || 'N/A'}</span>
+                    </div>
+                    
+                    ${appointment.variant_name ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Variant:</span>
+                        <span class="detail-value">${appointment.variant_name}</span>
+                    </div>
+                    ` : ''}
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Date & Time:</span>
+                        <span class="detail-value">${new Date(appointment.date).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  })}</span>
+                    </div>
+                    
+                    <div class="detail-row">
+                        <span class="detail-label">Status:</span>
+                        <span class="detail-value">
+                            <span class="status-badge">${appointment.status}</span>
+                        </span>
+                    </div>
+                    
+                    ${appointment.notes ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Notes:</span>
+                        <span class="detail-value">${appointment.notes}</span>
+                    </div>
+                    ` : ''}
+                    
+                    ${appointment.price ? `
+                    <div class="detail-row">
+                        <span class="detail-label">Price:</span>
+                        <span class="detail-value">
+                            <span class="price-highlight">$${appointment.price}</span>
+                        </span>
+                    </div>
+                    ` : ''}
+                </div>
+                
+                <div class="divider"></div>
+                
+                <!-- Summary -->
+                <div class="summary-section">
+                    <p class="summary-text">
+                        We'll send you a reminder before your appointment. If you need to make any changes, 
+                        please contact us as soon as possible.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="footer">
+                ${logo ? `<img src="${logo}" alt="${appointment.company_name || 'Company'}" class="footer-logo">` : ''}
+                <p class="footer-text footer-main">© ${new Date().getFullYear()} ${appointment.company_name || 'Company'}. All rights reserved.</p>
+                <p class="footer-text footer-sub">
+                    This is an automated message. Please do not reply to this email.
+                </p>
+                <p class="footer-text footer-sub">
+                    Need assistance? Contact our support team.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+};
+const sendAppointmentEmail = async (appointment, toEmails = [], emailConfig, type = 'created', logo) => {
+  try {
+    if (typeof toEmails === 'string') {
+      try {
+        toEmails = JSON.parse(toEmails);
+      } catch (err) {
+        console.warn('Invalid JSON string for toEmails:', toEmails);
+        toEmails = [];
+      }
+    }
+
+    // Safety check: ensure it's an array
+    if (!Array.isArray(toEmails)) {
+      toEmails = [toEmails];
+    }
+    const transporter = nodemailer.createTransport(emailConfig);
+
+    const mailOptions = {
+      from: emailConfig.auth.user,
+      to: toEmails.join(','), // multiple recipients
+      subject: `Appointment ${type.charAt(0).toUpperCase() + type.slice(1)} - ${appointment.service_name}`,
+      html: getAppointmentEmailTemplate(appointment, type, logo)
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`Appointment ${type} email sent to: ${toEmails.join(', ')}`);
+  } catch (error) {
+    console.error('Error sending email:', error);
+    // Don't crash app, fail silently
+  }
+};
+
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Appointment:
+ *       type: object
+ *       required:
+ *         - client_id
+ *         - service_id
+ *         - date
+ *         - status
+ *       properties:
+ *         client_id:
+ *           type: integer
+ *           description: ID of the client
+ *           example: 1
+ *         service_id:
+ *           type: integer
+ *           description: ID of the service
+ *           example: 1
+ *         service_variant_id:
+ *           type: integer
+ *           description: ID of the service variant (optional)
+ *           example: 1
+ *         provider_id:
+ *           type: integer
+ *           description: ID of the service provider
+ *           example: 1
+ *         date:
+ *           type: string
+ *           format: date-time
+ *           description: Start time of the appointment
+ *           example: "2024-12-15T10:00:00Z"
+ *         end_time:
+ *           type: string
+ *           format: date-time
+ *           description: End time of the appointment
+ *           example: "2024-12-15T11:00:00Z"
+ *         status:
+ *           type: string
+ *           enum: [scheduled, confirmed, in_progress, completed, cancelled, no_show]
+ *           description: Status of the appointment
+ *           example: "scheduled"
+ *         notes:
+ *           type: string
+ *           description: Additional notes for the appointment
+ *           example: "Client prefers morning appointments"
+ *         price:
+ *           type: number
+ *           format: decimal
+ *           description: Price of the appointment
+ *           example: 150.00
+ *         discount:
+ *           type: number
+ *           format: decimal
+ *           description: Discount applied
+ *           example: 15.00
+ *         payment_status:
+ *           type: string
+ *           enum: [pending, paid, partial, refunded]
+ *           description: Payment status
+ *           example: "pending"
+ */
+
+/**
+ * @swagger
+ * /appointments/user/{user_id}:
+ *   get:
+ *     summary: Get all appointments by user ID in descending date order
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: user_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: User ID to get appointments for
+ *         example: 123
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Page number for pagination
+ *         example: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Number of items per page
+ *         example: 10
+ *     responses:
+ *       200:
+ *         description: User appointments retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 appointments:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Appointment'
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     page:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     total:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *       400:
+ *         description: Invalid user ID
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/user/:user_id', authenticateToken, async (req, res, next) => {
+  let connection = null;
+
+  try {
+    // Input validation - User ID
+    const userId = req.params.user_id;
+
+    // Strong validation for user_id
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required',
+        appointments: [],
+        pagination: null
+      });
+    }
+
+    // Check if user_id is a valid positive integer
+    const userIdNum = parseInt(userId);
+    if (isNaN(userIdNum) || userIdNum <= 0 || !Number.isInteger(userIdNum)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID. Must be a positive integer',
+        appointments: [],
+        pagination: null
+      });
+    }
+
+    // Pagination validation with defaults
+    let { page = 1, limit = 10 } = req.query;
+
+    // Strong pagination validation
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Get database connection
+    connection = await db.getConnection();
+
+    // First check if user exists (optional security check)
+    const userCheckQuery = `
+      SELECT id FROM users 
+      WHERE id = ? AND company_id = ?
+      LIMIT 1
+    `;
+
+    const [userExists] = await connection.execute(userCheckQuery, [userIdNum, req.user.company_id || 0]);
+
+    if (!userExists || userExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        appointments: [],
+        pagination: null
+      });
+    }
+
+    // Main query to get appointments - Strong and safe
+    const appointmentsQuery = `
+      SELECT 
+        a.id,
+        a.service_id,
+        a.user_id,
+        a.date,
+        a.status,
+        a.notes,
+        a.created_at,
+        a.updated_at,
+        COALESCE(TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))), 'Unknown User') as user_name,
+        COALESCE(u.email, '') as user_email,
+        COALESCE(u.phone, '') as user_phone,
+        COALESCE(s.name, 'Unknown Service') as service_name,
+        COALESCE(a.company_id, 0) as company_id
+      FROM appointments a
+      LEFT JOIN users u ON a.user_id = u.id
+      LEFT JOIN services s ON a.service_id = s.id
+      WHERE a.user_id = ? 
+        AND a.company_id = ?
+      ORDER BY a.date DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    // Count query for pagination
+    const countQuery = `
+      SELECT COUNT(*) as total 
+      FROM appointments a
+      WHERE a.user_id = ? 
+        AND a.company_id = ?
+    `;
+
+    // Execute both queries safely
+    const [countResult] = await connection.execute(countQuery, [userIdNum, req.user.company_id || 0]);
+    const total = (countResult && countResult[0] && countResult[0].total) ? parseInt(countResult[0].total) : 0;
+
+    const [appointments] = await connection.execute(appointmentsQuery, [
+      userIdNum,
+      req.user.company_id || 0,
+      limitNum,
+      offset
+    ]);
+
+    // Safe data processing
+    const processedAppointments = (appointments || []).map(appointment => {
+      try {
+        return {
+          id: appointment.id || null,
+          user_id: appointment.user_id || null,
+          user_name: appointment.user_name || null,
+          user_email: appointment.user_email || null,
+          service_id: appointment.service_id || null,
+          date: appointment.date || null,
+          status: appointment.status || 'unknown',
+          notes: appointment.notes || '',
+          service_name: appointment.service_name || 'Unknown Service',
+          created_at: appointment.created_at || null,
+          updated_at: appointment.updated_at || null
+        };
+      } catch (err) {
+        console.error('Error processing appointment:', err);
+        return null;
+      }
+    }).filter(appointment => appointment !== null);
+
+    // Calculate pagination info safely
+    const totalPages = total > 0 ? Math.ceil(total / limitNum) : 0;
+
+    // Success response
+    res.status(200).json({
+      success: true,
+      message: `Found ${processedAppointments.length} appointments for user ${userIdNum}`,
+      appointments: processedAppointments,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        totalPages: totalPages,
+        hasNext: pageNum < totalPages,
+        hasPrev: pageNum > 1
+      }
+    });
+
+  } catch (error) {
+    // Strong error handling
+    console.error('Error in get appointments by user ID:', {
+      error: error.message,
+      stack: error.stack,
+      userId: req.params.user_id,
+      timestamp: new Date().toISOString()
+    });
+
+    // Don't expose internal errors to client
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while fetching appointments',
+      appointments: [],
+      pagination: null
+    });
+  } finally {
+    // Always release database connection
+    if (connection) {
+      try {
+        connection.release();
+      } catch (releaseError) {
+        console.error('Error releasing database connection:', releaseError);
+      }
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /appointments:
+ *   post:
+ *     summary: Create new appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             name: "Test User"
+ *             email: "test@gmail.com"
+ *             phone: "+92 316765787"
+ *             service_id: 1
+ *             service_variant_id: 1
+ *             user_id: null
+ *             company_id: 1
+ *             date: "2024-12-15T10:00:00Z"
+ *             status: "scheduled"
+ *             notes: "Regular checkup appointment"
+ *     responses:
+ *       201:
+ *         description: Appointment created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment created successfully"
+ *                 appointment:
+ *                   $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/', validate(schemas.appointment), async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // Extract and validate required fields
+    const { company_id, service_id, date, status, email, name, phone, user_id } = req.body;
+
+    // Enhanced validation with better error messages
+    if (!service_id || !date || !status) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: 'Missing required fields: service_id, date, and status are required'
+      });
+    }
+
+    // Validate email format
+    if (!email || !email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: 'Valid email address is required'
+      });
+    }
+
+    // Validate date format
+    const appointmentDate = new Date(date);
+    if (isNaN(appointmentDate.getTime())) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: 'Invalid date format. Please provide a valid date'
+      });
+    }
+
+    // Verify service exists and belongs to company
+    const [serviceCheck] = await connection.execute(
+      'SELECT id, name FROM services WHERE id = ? AND company_id = ?',
+      [service_id, company_id]
+    );
+
+    if (serviceCheck.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: 'Selected service is not available for this company'
+      });
+    }
+
+    // Initialize user-related variables
+    let finalUserId = null;
+    let shouldSendCompleteProfileEmail = false;
+    let newUser = null;
+    let existingUserNeedsProfileCompletion = false;
+    let userFound = false;
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Check if user_id is provided and valid
+    const isValidUserId = user_id && !isNaN(parseInt(user_id)) && parseInt(user_id) > 0;
+
+    if (!isValidUserId) {
+      // STEP 1: Check if user with this email already exists in users table
+      const [existingUserCheck] = await connection.execute(
+        'SELECT id, email, password_hash, first_name, last_name, phone, is_active FROM users WHERE LOWER(email) = ? AND company_id = ?',
+        [cleanEmail, company_id]
+      );
+
+      if (existingUserCheck.length > 0) {
+        // User exists - use existing user ID
+        const existingUser = existingUserCheck[0];
+        finalUserId = existingUser.id;
+        userFound = true;
+
+        // Check if user needs profile completion (password column is empty/null)
+        if (!existingUser.password_hash || existingUser.password_hash.trim() === '') {
+          existingUserNeedsProfileCompletion = true;
+          shouldSendCompleteProfileEmail = true;
+        }
+
+        console.log(`Found existing user with ID: ${finalUserId}, Profile completion needed: ${existingUserNeedsProfileCompletion}`);
+      } else {
+        // STEP 2: Create new user since email doesn't exist
+        const { first_name, last_name } = splitFullName(name || 'Guest User');
+
+        const newUserData = {
+          company_id,
+          first_name: first_name || 'Guest',
+          last_name: last_name || 'User',
+          email: cleanEmail,
+          phone: phone?.trim() || null,
+          is_active: 0, // Inactive until profile completion
+          created_at: new Date(),
+          updated_at: new Date()
+        };
+
+        const [userResult] = await connection.execute(
+          `INSERT INTO users (company_id, first_name, last_name, email, phone, is_active, created_at, updated_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            newUserData.company_id,
+            newUserData.first_name,
+            newUserData.last_name,
+            newUserData.email,
+            newUserData.phone,
+            newUserData.is_active,
+            newUserData.created_at,
+            newUserData.updated_at
+          ]
+        );
+
+        finalUserId = userResult.insertId;
+        shouldSendCompleteProfileEmail = true;
+
+        newUser = {
+          id: finalUserId,
+          ...newUserData
+        };
+
+        console.log(`Created new user with ID: ${finalUserId}`);
+      }
+    } else {
+      // STEP 3: Use provided user_id and verify it exists
+      finalUserId = parseInt(user_id);
+
+      const [userVerification] = await connection.execute(
+        'SELECT id, email, password_hash, first_name, last_name, phone FROM users WHERE id = ? AND company_id = ?',
+        [finalUserId, company_id]
+      );
+
+      if (userVerification.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          message: 'Provided user ID does not exist or does not belong to this company'
+        });
+      }
+
+      userFound = true;
+      // Check if this user also needs profile completion
+      if (!userVerification[0].password_hash || userVerification[0].password_hash.trim() === '') {
+        existingUserNeedsProfileCompletion = true;
+        shouldSendCompleteProfileEmail = true;
+      }
+    }
+
+    // Check for appointment conflicts with user-friendly message
+    const [conflictCheck] = await connection.execute(
+      `SELECT id, date, status FROM appointments 
+       WHERE user_id = ? AND DATE(date) = DATE(?) AND status NOT IN ('cancelled', 'completed')`,
+      [finalUserId, date]
+    );
+
+    if (conflictCheck.length > 0) {
+      await connection.rollback();
+      const conflictDate = new Date(conflictCheck[0].date).toLocaleDateString();
+      return res.status(409).json({
+        message: `You already have an appointment scheduled on ${conflictDate}. Please choose a different time slot or cancel your existing appointment.`
+      });
+    }
+
+    // Create appointment with enhanced data
+    const appointmentData = {
+      company_id,
+      service_id,
+      service_variant_id: req.body.service_variant_id || null,
+      user_id: finalUserId,
+      date: appointmentDate,
+      status: status.toLowerCase(),
+      notes: req.body.notes?.trim() || null,
+      email: cleanEmail,
+      name: name?.trim() || null,
+      phone: phone?.trim() || null,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    // Remove null/undefined values for cleaner insert
+    const cleanAppointmentData = Object.fromEntries(
+      Object.entries(appointmentData).filter(([_, value]) => value !== null && value !== undefined)
+    );
+
+    const fields = Object.keys(cleanAppointmentData);
+    const values = Object.values(cleanAppointmentData);
+    const placeholders = fields.map(() => '?').join(', ');
+
+    const [appointmentResult] = await connection.execute(
+      `INSERT INTO appointments (${fields.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
+
+    // Fetch the created appointment with comprehensive data
+    const [appointmentDetails] = await connection.execute(
+      `SELECT 
+        a.*,
+        s.name as service_name,
+        s.duration_minutes as service_duration,
+        sv.name as variant_name,
+        sv.price as variant_price,
+        c.name as company_name,
+        c.logo_url as company_logo,
+        c.website_url as company_website,
+        u.first_name as user_first_name,
+        u.last_name as user_last_name,
+        u.email as user_email,
+        u.phone as user_phone,
+        u.is_active as user_is_active
+       FROM appointments a
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN companies c ON a.company_id = c.id
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE a.id = ?`,
+      [appointmentResult.insertId]
+    );
+
+    await connection.commit();
+
+    const appointment = appointmentDetails[0];
+
+    // Enhance appointment object for emails
+    appointment.client_name = appointment.user_first_name ?
+      `${appointment.user_first_name} ${appointment.user_last_name || ''}`.trim() :
+      (appointment.name || 'Valued Customer');
+
+    // Get company email configuration
+    const companyEmailConfig = await getCompanyEmailConfig(company_id, connection);
+
+    // Prepare email recipients
+    const emailRecipients = await prepareEmailRecipients(companyEmailConfig, appointment.email);
+
+    // Send appointment confirmation email to all recipients
+    if (emailRecipients.length > 0) {
+      setImmediate(async () => {
+        try {
+          await sendAppointmentEmail(
+            appointment,
+            emailRecipients,
+            companyEmailConfig,
+            'created',
+            appointment.company_logo
+          );
+          console.log('Appointment confirmation email sent to:', emailRecipients);
+        } catch (emailError) {
+          console.error('Failed to send appointment confirmation email:', emailError);
+        }
+      });
+    }
+
+    // Send profile completion email if needed
+    if (shouldSendCompleteProfileEmail) {
+      try {
+        const { token, expiresAt } = generateCompleteProfileToken();
+
+        // Store token in database
+        await connection.execute(
+          `INSERT INTO user_profile_tokens (user_id, token, expires_at, created_at, is_used) 
+           VALUES (?, ?, ?, ?, 0)`,
+          [finalUserId, token, expiresAt, new Date()]
+        );
+
+        // Prepare user data for profile completion email
+        // Use appointment data if user data is not available, ensuring phone is included
+        const userForEmail = newUser || {
+          id: finalUserId,
+          email: cleanEmail,
+          first_name: appointment.user_first_name || (name ? splitFullName(name).first_name : 'Guest'),
+          last_name: appointment.user_last_name || (name ? splitFullName(name).last_name : 'User'),
+          phone: appointment.user_phone || phone?.trim() || null // Fix: Include phone from appointment data
+        };
+
+        // Send profile completion email asynchronously
+        setImmediate(async () => {
+          try {
+            await sendCompleteProfileEmail(
+              userForEmail,
+              token,
+              appointment.company_name,
+              companyEmailConfig,
+              appointment.company_logo,
+              appointment.company_website,
+              expiresAt
+            );
+            console.log('Profile completion email sent to:', userForEmail.email);
+          } catch (emailError) {
+            console.error('Failed to send profile completion email:', emailError);
+          }
+        });
+
+      } catch (tokenError) {
+        console.error('Failed to generate profile completion token:', tokenError);
+      }
+    }
+
+    // Prepare response based on user status with clear messages
+    let responseMessage = 'Appointment booked successfully!';
+    let additionalInfo = {};
+
+    if (existingUserNeedsProfileCompletion) {
+      responseMessage = 'Appointment booked successfully! Please complete your profile to unlock additional features.';
+      additionalInfo = {
+        profile_completion_required: true,
+        profile_completion_message: 'A profile completion link has been sent to your email address.'
+      };
+    } else if (newUser) {
+      responseMessage = 'Appointment booked successfully! Your account has been created.';
+      additionalInfo = {
+        user_created: true,
+        profile_completion_required: true,
+        profile_completion_message: 'Please check your email to complete your profile setup.'
+      };
+    }
+
+    // Send success response
+    res.status(201).json({
+      message: responseMessage,
+      appointment: {
+        id: appointment.id,
+        date: appointment.date,
+        status: appointment.status,
+        service_name: appointment.service_name,
+        variant_name: appointment.variant_name,
+        client_name: appointment.client_name,
+        email: appointment.email,
+        phone: appointment.phone,
+        notes: appointment.notes,
+        company_name: appointment.company_name
+      },
+      ...additionalInfo
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error creating appointment:', error);
+
+    // Handle specific database errors with user-friendly messages
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        message: 'This appointment slot is already taken. Please choose a different time slot.'
+      });
+    }
+
+    if (error.code === 'ER_DATA_TOO_LONG') {
+      return res.status(400).json({
+        message: 'Some of the provided information is too long. Please check your input and try again.'
+      });
+    }
+
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({
+        message: 'Invalid service or company reference. Please check your selection.'
+      });
+    }
+
+    // Generic error response
+    res.status(500).json({
+      message: 'We encountered an issue while booking your appointment. Please try again or contact support.'
+    });
+
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// Resend complete profile email API
+router.post('/resend-complete-profile', async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { email, company_id } = req.body;
+
+    if (!email || !company_id) {
+      return res.status(400).json({
+        error: 'Email and company_id are required'
+      });
+    }
+
+    // Find user
+    const [users] = await connection.execute(
+      'SELECT * FROM users WHERE email = ? AND company_id = ? AND is_active = 0',
+      [email.trim(), company_id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        error: 'User not found or already active'
+      });
+    }
+
+    const user = users[0];
+
+    // Get company details
+    const [companies] = await connection.execute(
+      'SELECT name FROM companies WHERE id = ?',
+      [company_id]
+    );
+
+    if (companies.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    const companyName = companies[0].name;
+
+    // Generate new token
+    const { token, expiresAt } = generateCompleteProfileToken();
+
+    // Invalidate old tokens for this user
+    await connection.execute(
+      'UPDATE user_profile_tokens SET is_used = 1 WHERE user_id = ? AND is_used = 0',
+      [user.id]
+    );
+
+    // Store new token
+    await connection.execute(
+      `INSERT INTO user_profile_tokens (user_id, token, expires_at, created_at) 
+       VALUES (?, ?, ?, ?)`,
+      [user.id, token, expiresAt, new Date()]
+    );
+
+    // Get email config
+    const companyEmailConfig = await getCompanyEmailConfig(company_id, connection);
+
+    // Send email
+    setImmediate(() => {
+      sendCompleteProfileEmail(user, token, companyName, companyEmailConfig);
+    });
+
+    res.status(200).json({
+      message: 'Complete profile email sent successfully',
+      expires_in_minutes: 10
+    });
+
+  } catch (error) {
+    console.error('Error resending complete profile email:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   put:
+ *     summary: Update appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             client_id: 1
+ *             service_id: 1
+ *             service_variant_id: 1
+ *             provider_id: 1
+ *             date: "2024-12-15T14:00:00Z"
+ *             end_time: "2024-12-15T15:00:00Z"
+ *             status: "confirmed"
+ *             notes: "Updated appointment time"
+ *             price: 175.00
+ *             discount: 25.00
+ *             payment_status: "paid"
+ *     responses:
+ *       200:
+ *         description: Appointment updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment updated successfully"
+ *                 appointment:
+ *                   $ref: '#/components/schemas/Appointment'
+ *       400:
+ *         description: Invalid request data
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.put('/:id', authenticateToken, validate(schemas.appointment), async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    // Check if appointment exists
+    const [existingAppointment] = await connection.execute(
+      'SELECT * FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    if (existingAppointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Validate foreign key constraints if provided
+    if (req.body.client_id) {
+      const [clientCheck] = await connection.execute(
+        'SELECT id FROM clients WHERE id = ? AND company_id = ?',
+        [req.body.client_id, req.user.company_id]
+      );
+
+      if (clientCheck.length === 0) {
+        return res.status(400).json({ error: 'Client not found' });
+      }
+    }
+
+    if (req.body.service_id) {
+      const [serviceCheck] = await connection.execute(
+        'SELECT id FROM services WHERE id = ? AND company_id = ?',
+        [req.body.service_id, req.user.company_id]
+      );
+
+      if (serviceCheck.length === 0) {
+        return res.status(400).json({ error: 'Service not found' });
+      }
+    }
+
+    // Validate date format if provided
+    if (req.body.date && isNaN(Date.parse(req.body.date))) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+
+    if (req.body.end_time && isNaN(Date.parse(req.body.end_time))) {
+      return res.status(400).json({ error: 'Invalid end_time format' });
+    }
+
+    // Remove undefined values and add updated_at
+    const updateData = { ...req.body, updated_at: new Date() };
+    Object.keys(updateData).forEach(key => {
+      if (updateData[key] === undefined) {
+        delete updateData[key];
+      }
+    });
+
+    if (Object.keys(updateData).length === 1) { // Only updated_at
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    const fields = Object.keys(updateData);
+    const values = Object.values(updateData);
+    const setClause = fields.map(field => `${field} = ?`).join(', ');
+
+    const [result] = await connection.execute(
+      `UPDATE appointments SET ${setClause} WHERE id = ? AND company_id = ?`,
+      [...values, appointmentId, req.user.company_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Appointment not found or no changes made' });
+    }
+
+    // Fetch updated appointment with all related data
+    const [updatedAppointment] = await connection.execute(
+      `SELECT a.*, 
+              CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+              COALESCE(s.name, 'Unknown Service') as service_name,
+              sv.name as variant_name,
+              COALESCE(sp.name, 'Unassigned') as provider_name,
+              c.email as client_email,
+              c.phone as client_phone
+       FROM appointments a
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN service_providers sp ON a.provider_id = sp.id
+       WHERE a.id = ?`,
+      [appointmentId]
+    );
+
+    await connection.commit();
+
+    const appointment = updatedAppointment[0];
+
+    // Send email notification (async, don't wait for it)
+    setImmediate(() => {
+      sendAppointmentEmail(appointment, 'updated');
+    });
+
+    res.json({
+      message: 'Appointment updated successfully',
+      appointment
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error updating appointment:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   get:
+ *     summary: Get single appointment by ID
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     responses:
+ *       200:
+ *         description: Appointment found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Appointment'
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    const [appointment] = await db.execute(
+      `SELECT a.*, 
+              CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, '')) as client_name,
+              COALESCE(s.name, 'Unknown Service') as service_name,
+              sv.name as variant_name,
+              COALESCE(sp.name, 'Unassigned') as provider_name,
+              c.email as client_email,
+              c.phone as client_phone
+       FROM appointments a
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN services s ON a.service_id = s.id
+       LEFT JOIN service_variants sv ON a.service_variant_id = sv.id
+       LEFT JOIN service_providers sp ON a.provider_id = sp.id
+       WHERE a.id = ? AND a.company_id = ?`,
+      [appointmentId, req.user.company_id]
+    );
+
+    if (appointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    res.json({ appointment: appointment[0] });
+  } catch (error) {
+    console.error('Error fetching appointment:', error);
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   delete:
+ *     summary: Delete appointment
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Appointment ID
+ *         example: 1
+ *     responses:
+ *       200:
+ *         description: Appointment deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Appointment deleted successfully"
+ *       404:
+ *         description: Appointment not found
+ *       500:
+ *         description: Server error
+ */
+router.delete('/:id', authenticateToken, async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const appointmentId = parseInt(req.params.id);
+
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    // Check if appointment exists before deleting
+    const [existingAppointment] = await connection.execute(
+      'SELECT * FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    if (existingAppointment.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const [result] = await connection.execute(
+      'DELETE FROM appointments WHERE id = ? AND company_id = ?',
+      [appointmentId, req.user.company_id]
+    );
+
+    await connection.commit();
+
+    res.json({ message: 'Appointment deleted successfully' });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error deleting appointment:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/bulk:
+ *   post:
+ *     summary: Create multiple appointments
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               appointments:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/Appointment'
+ *           example:
+ *             appointments:
+ *               - client_id: 1
+ *                 service_id: 1
+ *                 date: "2024-12-15T10:00:00Z"
+ *                 status: "scheduled"
+ *               - client_id: 2
+ *                 service_id: 2
+ *                 date: "2024-12-15T11:00:00Z"
+ *                 status: "scheduled"
+ *     responses:
+ *       201:
+ *         description: Appointments created successfully
+ *       400:
+ *         description: Invalid request data
+ */
+router.post('/bulk', authenticateToken, async (req, res, next) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { appointments } = req.body;
+
+    if (!Array.isArray(appointments) || appointments.length === 0) {
+      return res.status(400).json({ error: 'Invalid appointments array' });
+    }
+
+    if (appointments.length > 50) {
+      return res.status(400).json({ error: 'Maximum 50 appointments allowed per bulk operation' });
+    }
+
+    const createdAppointments = [];
+    const errors = [];
+
+    for (let i = 0; i < appointments.length; i++) {
+      try {
+        const appointment = appointments[i];
+
+        // Validate required fields
+        if (!appointment.client_id || !appointment.service_id || !appointment.date || !appointment.status) {
+          errors.push({ index: i, error: 'Missing required fields' });
+          continue;
+        }
+
+        const appointmentData = {
+          ...appointment,
+          company_id: req.user.company_id,
+          created_at: new Date(),
+          updated_at: new Date()
+        };
+
+        Object.keys(appointmentData).forEach(key => {
+          if (appointmentData[key] === undefined) {
+            delete appointmentData[key];
+          }
+        });
+
+        const fields = Object.keys(appointmentData);
+        const values = Object.values(appointmentData);
+        const placeholders = fields.map(() => '?').join(', ');
+
+        const [result] = await connection.execute(
+          `INSERT INTO appointments (${fields.join(', ')}) VALUES (${placeholders})`,
+          values
+        );
+
+        createdAppointments.push({ index: i, id: result.insertId });
+
+      } catch (error) {
+        errors.push({ index: i, error: error.message });
+      }
+    }
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: `${createdAppointments.length} appointments created successfully`,
+      created: createdAppointments,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error creating bulk appointments:', error);
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * @swagger
+ * /appointments/stats:
+ *   get:
+ *     summary: Get appointment statistics
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [today, week, month, year]
+ *         description: Statistics period
+ *         example: "month"
+ *     responses:
+ *       200:
+ *         description: Appointment statistics
+ */
+router.get('/stats', authenticateToken, async (req, res, next) => {
+  try {
+    const { period = 'month' } = req.query;
+
+    let dateFilter = '';
+    switch (period) {
+      case 'today':
+        dateFilter = 'DATE(a.date) = CURDATE()';
+        break;
+      case 'week':
+        dateFilter = 'a.date >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
+        break;
+      case 'month':
+        dateFilter = 'a.date >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
+        break;
+      case 'year':
+        dateFilter = 'a.date >= DATE_SUB(NOW(), INTERVAL 365 DAY)';
+        break;
+      default:
+        dateFilter = '1=1';
+    }
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_appointments,
+        COUNT(CASE WHEN a.status = 'scheduled' THEN 1 END) as scheduled,
+        COUNT(CASE WHEN a.status = 'confirmed' THEN 1 END) as confirmed,
+        COUNT(CASE WHEN a.status = 'completed' THEN 1 END) as completed,
+        COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled,
+        COUNT(CASE WHEN a.status = 'no_show' THEN 1 END) as no_show,
+        COALESCE(AVG(a.price), 0) as average_price,
+        COALESCE(SUM(a.price), 0) as total_revenue
+      FROM appointments a
+      WHERE a.company_id = ? AND ${dateFilter}
+    `, [req.user.company_id]);
+
+    res.json({ stats: stats[0] });
+
+  } catch (error) {
+    console.error('Error fetching appointment stats:', error);
+    next(error);
+  }
+});
+
+module.exports = router;
