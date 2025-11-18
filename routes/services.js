@@ -1,7 +1,8 @@
-const express = require('express');
-const db = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
-const { validate, schemas } = require('../middleware/validation');
+const express = require("express");
+const db = require("../config/database");
+const { authenticateToken } = require("../middleware/auth");
+const { validate, schemas } = require("../middleware/validation");
+const { requirePermission } = require("../middleware/rbac");
 
 const router = express.Router();
 
@@ -25,7 +26,7 @@ const router = express.Router();
  *         description: List of services
  */
 // authenticateToken
-router.get('/', async (req, res, next) => {
+router.get("/", async (req, res, next) => {
   try {
     const [services] = await db.execute(
       `SELECT s.*, sc.name as category_name 
@@ -35,7 +36,7 @@ router.get('/', async (req, res, next) => {
        ORDER BY s.name`,
       [req.query.company_id]
     );
-    
+
     res.json({ services });
   } catch (error) {
     next(error);
@@ -60,32 +61,38 @@ router.get('/', async (req, res, next) => {
  *       201:
  *         description: Service created successfully
  */
-router.post('/', authenticateToken, validate(schemas.service), async (req, res, next) => {
-  try {
-    const serviceData = { ...req.body, company_id: req.user.company_id };
-    
-    const fields = Object.keys(serviceData);
-    const values = Object.values(serviceData);
-    const placeholders = fields.map(() => '?').join(', ');
-    
-    const [result] = await db.execute(
-      `INSERT INTO services (${fields.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
-    
-    const [newService] = await db.execute(
-      'SELECT * FROM services WHERE id = ?',
-      [result.insertId]
-    );
-    
-    res.status(201).json({
-      message: 'Service created successfully',
-      service: newService[0]
-    });
-  } catch (error) {
-    next(error);
+router.post(
+  "/",
+  authenticateToken,
+  requirePermission("services", "create_service"),
+  validate(schemas.service),
+  async (req, res, next) => {
+    try {
+      const serviceData = { ...req.body, company_id: req.user.company_id };
+
+      const fields = Object.keys(serviceData);
+      const values = Object.values(serviceData);
+      const placeholders = fields.map(() => "?").join(", ");
+
+      const [result] = await db.execute(
+        `INSERT INTO services (${fields.join(", ")}) VALUES (${placeholders})`,
+        values
+      );
+
+      const [newService] = await db.execute(
+        "SELECT * FROM services WHERE id = ?",
+        [result.insertId]
+      );
+
+      res.status(201).json({
+        message: "Service created successfully",
+        service: newService[0],
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger
@@ -105,26 +112,32 @@ router.post('/', authenticateToken, validate(schemas.service), async (req, res, 
  *       200:
  *         description: Service updated successfully
  */
-router.put('/:id', authenticateToken, validate(schemas.service), async (req, res, next) => {
-  try {
-    const fields = Object.keys(req.body);
-    const values = Object.values(req.body);
-    const setClause = fields.map(field => `${field} = ?`).join(', ');
-    
-    const [result] = await db.execute(
-      `UPDATE services SET ${setClause} WHERE id = ? AND company_id = ?`,
-      [...values, req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Service not found' });
+router.put(
+  "/:id",
+  authenticateToken,
+  requirePermission("services", "edit_service"),
+  validate(schemas.service),
+  async (req, res, next) => {
+    try {
+      const fields = Object.keys(req.body);
+      const values = Object.values(req.body);
+      const setClause = fields.map((field) => `${field} = ?`).join(", ");
+
+      const [result] = await db.execute(
+        `UPDATE services SET ${setClause} WHERE id = ? AND company_id = ?`,
+        [...values, req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Service not found" });
+      }
+
+      res.json({ message: "Service updated successfully" });
+    } catch (error) {
+      next(error);
     }
-    
-    res.json({ message: 'Service updated successfully' });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /**
  * @swagger
@@ -144,21 +157,26 @@ router.put('/:id', authenticateToken, validate(schemas.service), async (req, res
  *       200:
  *         description: Service deleted successfully
  */
-router.delete('/:id', authenticateToken, async (req, res, next) => {
-  try {
-    const [result] = await db.execute(
-      'UPDATE services SET is_active = 0 WHERE id = ? AND company_id = ?',
-      [req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Service not found' });
+router.delete(
+  "/:id",
+  authenticateToken,
+  requirePermission("services", "delete_service"),
+  async (req, res, next) => {
+    try {
+      const [result] = await db.execute(
+        "UPDATE services SET is_active = 0 WHERE id = ? AND company_id = ?",
+        [req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Service not found" });
+      }
+
+      res.json({ message: "Service deleted successfully" });
+    } catch (error) {
+      next(error);
     }
-    
-    res.json({ message: 'Service deleted successfully' });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 module.exports = router;

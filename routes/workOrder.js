@@ -1,8 +1,9 @@
-const express = require('express');
-const db = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
-const Joi = require('joi');
-const { validate } = require('../middleware/validation');
+const express = require("express");
+const db = require("../config/database");
+const { authenticateToken } = require("../middleware/auth");
+const Joi = require("joi");
+const { validate } = require("../middleware/validation");
+const { requirePermission } = require("../middleware/rbac");
 
 const router = express.Router();
 
@@ -14,7 +15,7 @@ const workOrderSchema = Joi.object({
   scheduled_time: Joi.string().max(20),
   address: Joi.string(),
   status: Joi.string().max(20).required(),
-  special_instructions: Joi.string()
+  special_instructions: Joi.string(),
 });
 
 /**
@@ -29,10 +30,14 @@ const workOrderSchema = Joi.object({
  *       200:
  *         description: List of work orders
  */
-router.get('/', authenticateToken, async (req, res, next) => {
-  try {
-    const [workOrders] = await db.execute(
-      `SELECT w.*, 
+router.get(
+  "/",
+  authenticateToken,
+  requirePermission("work_orders", "view_work_orders"),
+  async (req, res, next) => {
+    try {
+      const [workOrders] = await db.execute(
+        `SELECT w.*, 
               CONCAT(c.first_name, ' ', c.last_name) as client_name,
               s.name as service_name,
               sp.name as assigned_provider_name
@@ -42,14 +47,15 @@ router.get('/', authenticateToken, async (req, res, next) => {
        LEFT JOIN service_providers sp ON w.assigned_to = sp.id
        WHERE w.company_id = ?
        ORDER BY w.scheduled_date DESC`,
-      [req.user.company_id]
-    );
-    
-    res.json({ workOrders });
-  } catch (error) {
-    next(error);
+        [req.user.company_id]
+      );
+
+      res.json({ workOrders });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger
@@ -69,27 +75,35 @@ router.get('/', authenticateToken, async (req, res, next) => {
  *       201:
  *         description: Work order created successfully
  */
-router.post('/', authenticateToken, validate(workOrderSchema), async (req, res, next) => {
-  try {
-    const workOrderData = { ...req.body, company_id: req.user.company_id };
-    
-    const fields = Object.keys(workOrderData);
-    const values = Object.values(workOrderData);
-    const placeholders = fields.map(() => '?').join(', ');
-    
-    const [result] = await db.execute(
-      `INSERT INTO work_orders (${fields.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
-    
-    res.status(201).json({
-      message: 'Work order created successfully',
-      work_order_id: result.insertId
-    });
-  } catch (error) {
-    next(error);
+router.post(
+  "/",
+  authenticateToken,
+  requirePermission("work_orders", "create_work_order"),
+  validate(workOrderSchema),
+  async (req, res, next) => {
+    try {
+      const workOrderData = { ...req.body, company_id: req.user.company_id };
+
+      const fields = Object.keys(workOrderData);
+      const values = Object.values(workOrderData);
+      const placeholders = fields.map(() => "?").join(", ");
+
+      const [result] = await db.execute(
+        `INSERT INTO work_orders (${fields.join(
+          ", "
+        )}) VALUES (${placeholders})`,
+        values
+      );
+
+      res.status(201).json({
+        message: "Work order created successfully",
+        work_order_id: result.insertId,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger
@@ -109,26 +123,32 @@ router.post('/', authenticateToken, validate(workOrderSchema), async (req, res, 
  *       200:
  *         description: Work order updated successfully
  */
-router.put('/:id', authenticateToken, validate(workOrderSchema), async (req, res, next) => {
-  try {
-    const fields = Object.keys(req.body);
-    const values = Object.values(req.body);
-    const setClause = fields.map(field => `${field} = ?`).join(', ');
-    
-    const [result] = await db.execute(
-      `UPDATE work_orders SET ${setClause} WHERE id = ? AND company_id = ?`,
-      [...values, req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Work order not found' });
+router.put(
+  "/:id",
+  authenticateToken,
+  requirePermission("work_orders", "edit_work_order"),
+  validate(workOrderSchema),
+  async (req, res, next) => {
+    try {
+      const fields = Object.keys(req.body);
+      const values = Object.values(req.body);
+      const setClause = fields.map((field) => `${field} = ?`).join(", ");
+
+      const [result] = await db.execute(
+        `UPDATE work_orders SET ${setClause} WHERE id = ? AND company_id = ?`,
+        [...values, req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Work order not found" });
+      }
+
+      res.json({ message: "Work order updated successfully" });
+    } catch (error) {
+      next(error);
     }
-    
-    res.json({ message: 'Work order updated successfully' });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /**
  * @swagger
@@ -148,21 +168,26 @@ router.put('/:id', authenticateToken, validate(workOrderSchema), async (req, res
  *       200:
  *         description: Work order deleted successfully
  */
-router.delete('/:id', authenticateToken, async (req, res, next) => {
-  try {
-    const [result] = await db.execute(
-      'DELETE FROM work_orders WHERE id = ? AND company_id = ?',
-      [req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Work order not found' });
+router.delete(
+  "/:id",
+  authenticateToken,
+  requirePermission("work_orders", "delete_work_order"),
+  async (req, res, next) => {
+    try {
+      const [result] = await db.execute(
+        "DELETE FROM work_orders WHERE id = ? AND company_id = ?",
+        [req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Work order not found" });
+      }
+
+      res.json({ message: "Work order deleted successfully" });
+    } catch (error) {
+      next(error);
     }
-    
-    res.json({ message: 'Work order deleted successfully' });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 module.exports = router;

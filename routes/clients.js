@@ -1,7 +1,8 @@
-const express = require('express');
-const db = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
-const { validate, schemas } = require('../middleware/validation');
+const express = require("express");
+const db = require("../config/database");
+const { authenticateToken } = require("../middleware/auth");
+const { validate, schemas } = require("../middleware/validation");
+const { requirePermission } = require("../middleware/rbac");
 
 const router = express.Router();
 
@@ -68,55 +69,61 @@ const router = express.Router();
  *       200:
  *         description: List of clients
  */
-router.get('/', authenticateToken, async (req, res, next) => {
-  try {
-    const { page = 1, limit = 10, search = '' } = req.query;
-    const offset = (page - 1) * limit;
-    
-    let query = `
+router.get(
+  "/",
+  authenticateToken,
+  requirePermission("clients", "view_clients"),
+  async (req, res, next) => {
+    try {
+      const { page = 1, limit = 10, search = "" } = req.query;
+      const offset = (page - 1) * limit;
+
+      let query = `
       SELECT id, first_name, last_name, email, phone, city, state, 
              client_since, is_active, created_at
       FROM clients 
       WHERE company_id = ?
     `;
-    
-    const params = [req.user.company_id];
-    
-    if (search) {
-      query += ` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    
-    query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
-    
-    const [clients] = await db.execute(query, params);
-    
-    // Get total count
-    let countQuery = 'SELECT COUNT(*) as total FROM clients WHERE company_id = ?';
-    const countParams = [req.user.company_id];
-    
-    if (search) {
-      countQuery += ` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)`;
-      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    
-    const [countResult] = await db.execute(countQuery, countParams);
-    const total = countResult[0].total;
-    
-    res.json({
-      clients,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
+
+      const params = [req.user.company_id];
+
+      if (search) {
+        query += ` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)`;
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
       }
-    });
-  } catch (error) {
-    next(error);
+
+      query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      params.push(parseInt(limit), parseInt(offset));
+
+      const [clients] = await db.execute(query, params);
+
+      // Get total count
+      let countQuery =
+        "SELECT COUNT(*) as total FROM clients WHERE company_id = ?";
+      const countParams = [req.user.company_id];
+
+      if (search) {
+        countQuery += ` AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)`;
+        countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      }
+
+      const [countResult] = await db.execute(countQuery, countParams);
+      const total = countResult[0].total;
+
+      res.json({
+        clients,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger
@@ -138,22 +145,27 @@ router.get('/', authenticateToken, async (req, res, next) => {
  *       404:
  *         description: Client not found
  */
-router.get('/:id', authenticateToken, async (req, res, next) => {
-  try {
-    const [clients] = await db.execute(
-      'SELECT * FROM clients WHERE id = ? AND company_id = ?',
-      [req.params.id, req.user.company_id]
-    );
-    
-    if (!clients.length) {
-      return res.status(404).json({ error: 'Client not found' });
+router.get(
+  "/:id",
+  authenticateToken,
+  requirePermission("clients", "view_clients"),
+  async (req, res, next) => {
+    try {
+      const [clients] = await db.execute(
+        "SELECT * FROM clients WHERE id = ? AND company_id = ?",
+        [req.params.id, req.user.company_id]
+      );
+
+      if (!clients.length) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      res.json(clients[0]);
+    } catch (error) {
+      next(error);
     }
-    
-    res.json(clients[0]);
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /**
  * @swagger
@@ -173,32 +185,38 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
  *       201:
  *         description: Client created successfully
  */
-router.post('/', authenticateToken, validate(schemas.client), async (req, res, next) => {
-  try {
-    const clientData = { ...req.body, company_id: req.user.company_id };
-    
-    const fields = Object.keys(clientData);
-    const values = Object.values(clientData);
-    const placeholders = fields.map(() => '?').join(', ');
-    
-    const [result] = await db.execute(
-      `INSERT INTO clients (${fields.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
-    
-    const [newClient] = await db.execute(
-      'SELECT * FROM clients WHERE id = ?',
-      [result.insertId]
-    );
-    
-    res.status(201).json({
-      message: 'Client created successfully',
-      client: newClient[0]
-    });
-  } catch (error) {
-    next(error);
+router.post(
+  "/",
+  authenticateToken,
+  requirePermission("clients", "create_client"),
+  validate(schemas.client),
+  async (req, res, next) => {
+    try {
+      const clientData = { ...req.body, company_id: req.user.company_id };
+
+      const fields = Object.keys(clientData);
+      const values = Object.values(clientData);
+      const placeholders = fields.map(() => "?").join(", ");
+
+      const [result] = await db.execute(
+        `INSERT INTO clients (${fields.join(", ")}) VALUES (${placeholders})`,
+        values
+      );
+
+      const [newClient] = await db.execute(
+        "SELECT * FROM clients WHERE id = ?",
+        [result.insertId]
+      );
+
+      res.status(201).json({
+        message: "Client created successfully",
+        client: newClient[0],
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger
@@ -224,34 +242,40 @@ router.post('/', authenticateToken, validate(schemas.client), async (req, res, n
  *       200:
  *         description: Client updated successfully
  */
-router.put('/:id', authenticateToken, validate(schemas.client), async (req, res, next) => {
-  try {
-    const fields = Object.keys(req.body);
-    const values = Object.values(req.body);
-    const setClause = fields.map(field => `${field} = ?`).join(', ');
-    
-    const [result] = await db.execute(
-      `UPDATE clients SET ${setClause} WHERE id = ? AND company_id = ?`,
-      [...values, req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+router.put(
+  "/:id",
+  authenticateToken,
+  requirePermission("clients", "edit_client"),
+  validate(schemas.client),
+  async (req, res, next) => {
+    try {
+      const fields = Object.keys(req.body);
+      const values = Object.values(req.body);
+      const setClause = fields.map((field) => `${field} = ?`).join(", ");
+
+      const [result] = await db.execute(
+        `UPDATE clients SET ${setClause} WHERE id = ? AND company_id = ?`,
+        [...values, req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      const [updatedClient] = await db.execute(
+        "SELECT * FROM clients WHERE id = ?",
+        [req.params.id]
+      );
+
+      res.json({
+        message: "Client updated successfully",
+        client: updatedClient[0],
+      });
+    } catch (error) {
+      next(error);
     }
-    
-    const [updatedClient] = await db.execute(
-      'SELECT * FROM clients WHERE id = ?',
-      [req.params.id]
-    );
-    
-    res.json({
-      message: 'Client updated successfully',
-      client: updatedClient[0]
-    });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 /**
  * @swagger
@@ -271,21 +295,26 @@ router.put('/:id', authenticateToken, validate(schemas.client), async (req, res,
  *       200:
  *         description: Client deleted successfully
  */
-router.delete('/:id', authenticateToken, async (req, res, next) => {
-  try {
-    const [result] = await db.execute(
-      'UPDATE clients SET is_active = 0 WHERE id = ? AND company_id = ?',
-      [req.params.id, req.user.company_id]
-    );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+router.delete(
+  "/:id",
+  authenticateToken,
+  requirePermission("clients", "delete_client"),
+  async (req, res, next) => {
+    try {
+      const [result] = await db.execute(
+        "UPDATE clients SET is_active = 0 WHERE id = ? AND company_id = ?",
+        [req.params.id, req.user.company_id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      res.json({ message: "Client deleted successfully" });
+    } catch (error) {
+      next(error);
     }
-    
-    res.json({ message: 'Client deleted successfully' });
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 module.exports = router;
