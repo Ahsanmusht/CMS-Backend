@@ -147,19 +147,20 @@ class RBACController {
       if (!role_key || !role_name) {
         throw new ErrorHandler('Role key and name are required', 400);
       }
-
+      
       // Check for duplicate role key
       const [existingRole] = await connection.execute(
         'SELECT id FROM company_roles WHERE role_key = ? AND company_id = ?',
         [role_key.trim(), req.query.company_id]
       );
+      console.log("hello");
 
       if (existingRole.length > 0) {
         throw new ErrorHandler('Role key already exists', 409);
       }
 
       // Verify user has permission to create roles
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'roles',
@@ -193,7 +194,7 @@ class RBACController {
       if (permission_ids && Array.isArray(permission_ids) && permission_ids.length > 0) {
         for (const permissionId of permission_ids) {
           // Verify user can grant this permission
-          const canGrant = await this.checkUserCanGrantPermission(
+          const canGrant = await RBACController.checkUserCanGrantPermission(
             connection,
             req.query.id,
             permissionId,
@@ -269,7 +270,7 @@ class RBACController {
       }
 
       // Verify permission
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'roles',
@@ -376,7 +377,7 @@ class RBACController {
       }
 
       // Verify permission
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'roles',
@@ -515,7 +516,7 @@ class RBACController {
       }
 
       // Verify user has permission to assign permissions
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'roles',
@@ -531,7 +532,7 @@ class RBACController {
 
       for (const permissionId of permission_ids) {
         // Check if user can grant this permission
-        const canGrantPermission = await this.checkUserCanGrantPermission(
+        const canGrantPermission = await RBACController.checkUserCanGrantPermission(
           connection,
           req.query.id,
           permissionId,
@@ -614,7 +615,7 @@ class RBACController {
       }
 
       // Verify user has permission
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'roles',
@@ -700,7 +701,7 @@ class RBACController {
       }
 
       // Verify permission to assign roles
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'users',
@@ -764,7 +765,7 @@ class RBACController {
       }
 
       // Verify permission
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         'users',
@@ -964,7 +965,7 @@ class RBACController {
         throw new ErrorHandler('Module key and permission key are required', 400);
       }
 
-      const hasPermission = await this.checkUserPermission(
+      const hasPermission = await RBACController.checkUserPermission(
         connection,
         req.query.id,
         module_key,
@@ -1023,7 +1024,7 @@ class RBACController {
       }
 
       // Verify user can grant this override
-      const canGrant = await this.checkUserCanGrantPermission(
+      const canGrant = await RBACController.checkUserCanGrantPermission(
         connection,
         req.query.id,
         permission_id,

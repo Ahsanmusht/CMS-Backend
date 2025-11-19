@@ -34,7 +34,8 @@ router.get("/", authenticateOwner, async (req, res, next) => {
  * @swagger
  * /companies:
  *   post:
- *     summary: Create new company
+ *     summary: Create a new company
+ *     description: Allows an authenticated owner to create a new company.
  *     tags: [Companies]
  *     security:
  *       - bearerAuth: []
@@ -44,17 +45,103 @@ router.get("/", authenticateOwner, async (req, res, next) => {
  *         application/json:
  *           schema:
  *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Eyecon Consultant"
+ *               business_type:
+ *                 type: string
+ *                 example: "Software"
+ *               description:
+ *                 type: string
+ *                 example: "POS & business software provider"
+ *               industry:
+ *                 type: string
+ *                 example: "IT"
+ *               website_url:
+ *                 type: string
+ *                 example: "https://eyeconconsultant.com"
+ *               logo_url:
+ *                 type: string
+ *                 example: "https://example.com/logo.png"
+ *               is_frozen:
+ *                 type: integer
+ *                 example: 0
+ *               frozen_at:
+ *                 type: string
+ *                 format: date-time
+ *                 example: null
+ *               frozen_by:
+ *                 type: integer
+ *                 example: null
+ *               freeze_reason:
+ *                 type: string
+ *                 example: null
+ *               smtp_host:
+ *                 type: string
+ *                 example: "smtp.gmail.com"
+ *               smtp_port:
+ *                 type: integer
+ *                 example: 587
+ *               smtp_user:
+ *                 type: string
+ *                 example: "support@eyecon.com"
+ *               smtp_pass:
+ *                 type: string
+ *                 example: "123456"
+ *               to_emails:
+ *                 type: string
+ *                 example: "admin@test.com,info@test.com"
+ *               allow_user_registration:
+ *                 type: integer
+ *                 example: 1
+ *               max_users:
+ *                 type: integer
+ *                 example: 50
+ *             required:
+ *               - name
  *     responses:
  *       201:
  *         description: Company created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Company created successfully
+ *                 company:
+ *                   type: object
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized (Owner token missing or invalid)
+ *       500:
+ *         description: Server error
  */
+
 router.post(
   "/",
   authenticateOwner,
-  validate(schemas.company),
+  // validate(schemas.company),
   async (req, res, next) => {
     try {
       const companyData = { ...req.body, owner_id: req.owner.id };
+
+       if (companyData.to_emails) {
+        if (Array.isArray(companyData.to_emails)) {
+          companyData.to_emails = JSON.stringify(companyData.to_emails);
+        } else if (typeof companyData.to_emails === "string") {
+          const emailsArray = companyData.to_emails
+            .split(",")
+            .map(e => e.trim())
+            .filter(Boolean);
+          companyData.to_emails = JSON.stringify(emailsArray);
+        }
+      } else {
+        companyData.to_emails = null; 
+      }
 
       const fields = Object.keys(companyData);
       const values = Object.values(companyData);
@@ -84,7 +171,8 @@ router.post(
  * @swagger
  * /companies/{id}:
  *   put:
- *     summary: Update company
+ *     summary: Update an existing company
+ *     description: Allows an authenticated owner to update one of their companies.
  *     tags: [Companies]
  *     security:
  *       - bearerAuth: []
@@ -94,18 +182,108 @@ router.post(
  *         required: true
  *         schema:
  *           type: integer
+ *         description: ID of the company to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Eyecon Consultant"
+ *               business_type:
+ *                 type: string
+ *                 example: "Software"
+ *               description:
+ *                 type: string
+ *                 example: "POS & business software provider"
+ *               industry:
+ *                 type: string
+ *                 example: "IT"
+ *               website_url:
+ *                 type: string
+ *                 example: "https://eyeconconsultant.com"
+ *               logo_url:
+ *                 type: string
+ *                 example: "https://example.com/logo.png"
+ *               is_frozen:
+ *                 type: integer
+ *                 example: 0
+ *               frozen_at:
+ *                 type: string
+ *                 format: date-time
+ *                 example: null
+ *               frozen_by:
+ *                 type: integer
+ *                 example: null
+ *               freeze_reason:
+ *                 type: string
+ *                 example: null
+ *               smtp_host:
+ *                 type: string
+ *                 example: "smtp.gmail.com"
+ *               smtp_port:
+ *                 type: integer
+ *                 example: 587
+ *               smtp_user:
+ *                 type: string
+ *                 example: "support@eyecon.com"
+ *               smtp_pass:
+ *                 type: string
+ *                 example: "123456"
+ *               to_emails:
+ *                 type: string
+ *                 example: "admin@test.com,info@test.com"
+ *               allow_user_registration:
+ *                 type: integer
+ *                 example: 1
+ *               max_users:
+ *                 type: integer
+ *                 example: 50
  *     responses:
  *       200:
  *         description: Company updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Company updated successfully
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized (Owner token missing or invalid)
+ *       404:
+ *         description: Company not found
+ *       500:
+ *         description: Server error
  */
 router.put(
   "/:id",
   authenticateOwner,
-  validate(schemas.company),
+  // validate(schemas.company),
   async (req, res, next) => {
     try {
-      const fields = Object.keys(req.body);
-      const values = Object.values(req.body);
+      const companyData = { ...req.body };
+
+      if (companyData.to_emails) {
+        if (Array.isArray(companyData.to_emails)) {
+          companyData.to_emails = JSON.stringify(companyData.to_emails);
+        } else if (typeof companyData.to_emails === "string") {
+          const emailsArray = companyData.to_emails
+            .split(",")
+            .map(e => e.trim())
+            .filter(Boolean);
+          companyData.to_emails = JSON.stringify(emailsArray);
+        }
+      }
+
+      const fields = Object.keys(companyData);
+      const values = Object.values(companyData);
       const setClause = fields.map((field) => `${field} = ?`).join(", ");
 
       const [result] = await db.execute(

@@ -66,6 +66,19 @@ router.get('/roles/:id', RBACController.getRoleById);
  *     tags: [RBAC - Roles]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company in which the role is being created
+ *       - in: query
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the logged-in user creating the role
  *     requestBody:
  *       required: true
  *       content:
@@ -80,6 +93,8 @@ router.get('/roles/:id', RBACController.getRoleById);
  *                 type: string
  *               role_name:
  *                 type: string
+ *               is_system_role:
+ *                 type: integer
  *               description:
  *                 type: string
  *               parent_role_id:
