@@ -1,8 +1,17 @@
-const db = require('../config/database');
-const { ResponseHandler, ErrorHandler, handleError, Helpers } = require('../utils/responseHandler');
+const db = require("../config/database");
+const {
+  ResponseHandler,
+  ErrorHandler,
+  handleError,
+  Helpers,
+} = require("../utils/responseHandler");
 
 class RBACController {
   // ========== ROLE MANAGEMENT ==========
+
+  static isOwner(req) {
+    return req.user && req.user.userType === "owner";
+  }
 
   /**
    * Get all roles for a company with full permission details
@@ -10,18 +19,22 @@ class RBACController {
   static async getAllRoles(req, res) {
     try {
       const { page, limit, search, include_permissions } = req.query;
-      const { page: pageNum, limit: limitNum, offset } = Helpers.validatePagination(page, limit);
+      const {
+        page: pageNum,
+        limit: limitNum,
+        offset,
+      } = Helpers.validatePagination(page, limit);
 
-      let whereConditions = ['cr.company_id = ?'];
+      let whereConditions = ["cr.company_id = ?"];
       let queryParams = [req.query.company_id];
 
       if (search && search.trim()) {
-        whereConditions.push('(cr.role_name LIKE ? OR cr.role_key LIKE ?)');
+        whereConditions.push("(cr.role_name LIKE ? OR cr.role_key LIKE ?)");
         const searchTerm = `%${search.trim()}%`;
         queryParams.push(searchTerm, searchTerm);
       }
 
-      const whereClause = whereConditions.join(' AND ');
+      const whereClause = whereConditions.join(" AND ");
 
       // Count total roles
       const [countResult] = await db.execute(
@@ -45,7 +58,7 @@ class RBACController {
       );
 
       // Optionally include permissions for each role
-      if (include_permissions === 'true') {
+      if (include_permissions === "true") {
         for (let role of roles) {
           const [permissions] = await db.execute(
             `SELECT rp.*, sm.module_key, sm.module_name, sm.module_group,
@@ -65,7 +78,7 @@ class RBACController {
         res,
         roles,
         { page: pageNum, limit: limitNum, total },
-        'Roles retrieved successfully'
+        "Roles retrieved successfully"
       );
     } catch (error) {
       return handleError(error, res);
@@ -77,7 +90,7 @@ class RBACController {
    */
   static async getRoleById(req, res) {
     try {
-      const roleId = Helpers.validateId(req.params.id, 'Role ID');
+      const roleId = Helpers.validateId(req.params.id, "Role ID");
 
       const [role] = await db.execute(
         `SELECT cr.*, 
@@ -92,7 +105,7 @@ class RBACController {
       );
 
       if (role.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Get permissions
@@ -118,12 +131,15 @@ class RBACController {
         [roleId, req.query.company_id]
       );
 
-      return ResponseHandler.success(res, {
-        ...role[0],
-        permissions,
-        users
-      }, 'Role details retrieved successfully');
-
+      return ResponseHandler.success(
+        res,
+        {
+          ...role[0],
+          permissions,
+          users,
+        },
+        "Role details retrieved successfully"
+      );
     } catch (error) {
       return handleError(error, res);
     }
@@ -139,36 +155,45 @@ class RBACController {
       await connection.beginTransaction();
 
       const {
-        role_key, role_name, description, parent_role_id,
-        hierarchy_level, permission_ids, is_system_role
+        role_key,
+        role_name,
+        description,
+        parent_role_id,
+        hierarchy_level,
+        permission_ids,
+        is_system_role,
       } = req.body;
 
       // Validate required fields
       if (!role_key || !role_name) {
-        throw new ErrorHandler('Role key and name are required', 400);
+        throw new ErrorHandler("Role key and name are required", 400);
       }
-      
+
       // Check for duplicate role key
       const [existingRole] = await connection.execute(
-        'SELECT id FROM company_roles WHERE role_key = ? AND company_id = ?',
+        "SELECT id FROM company_roles WHERE role_key = ? AND company_id = ?",
         [role_key.trim(), req.query.company_id]
       );
-      console.log("hello");
 
       if (existingRole.length > 0) {
-        throw new ErrorHandler('Role key already exists', 409);
+        throw new ErrorHandler("Role key already exists", 409);
       }
 
       // Verify user has permission to create roles
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'roles',
-        'manage_roles'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "roles",
+          "manage_roles"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to create roles', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to create roles",
+            403
+          );
+        }
       }
 
       // Create role
@@ -183,23 +208,32 @@ class RBACController {
         created_by: req.query.id,
         is_active: 1,
         created_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
       };
 
-      const { query, values } = Helpers.buildInsertQuery('company_roles', roleData);
+      const { query, values } = Helpers.buildInsertQuery(
+        "company_roles",
+        roleData
+      );
       const [result] = await connection.execute(query, values);
       const newRoleId = result.insertId;
 
       // Assign permissions if provided
-      if (permission_ids && Array.isArray(permission_ids) && permission_ids.length > 0) {
+      if (
+        permission_ids &&
+        Array.isArray(permission_ids) &&
+        permission_ids.length > 0
+      ) {
         for (const permissionId of permission_ids) {
           // Verify user can grant this permission
-          const canGrant = await RBACController.checkUserCanGrantPermission(
-            connection,
-            req.query.id,
-            permissionId,
-            req.query.company_id
-          );
+          const canGrant =
+            RBACController.isOwner(req) ||
+            (await RBACController.checkUserCanGrantPermission(
+              connection,
+              req.query.id,
+              permissionId,
+              req.query.company_id
+            ));
 
           if (canGrant) {
             await connection.execute(
@@ -219,7 +253,11 @@ class RBACController {
           req.query.company_id,
           newRoleId,
           req.query.id,
-          JSON.stringify({ role_name, role_key, permission_count: permission_ids?.length || 0 })
+          JSON.stringify({
+            role_name,
+            role_key,
+            permission_count: permission_ids?.length || 0,
+          }),
         ]
       );
 
@@ -233,8 +271,11 @@ class RBACController {
         [newRoleId]
       );
 
-      return ResponseHandler.created(res, newRole[0], 'Role created successfully');
-
+      return ResponseHandler.created(
+        res,
+        newRole[0],
+        "Role created successfully"
+      );
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -252,38 +293,43 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const roleId = Helpers.validateId(req.params.id, 'Role ID');
+      const roleId = Helpers.validateId(req.params.id, "Role ID");
 
       // Check if role exists
       const [existingRole] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [roleId, req.query.company_id]
       );
 
       if (existingRole.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Prevent updating system roles
       if (existingRole[0].is_system_role === 1) {
-        throw new ErrorHandler('Cannot modify system roles', 403);
+        throw new ErrorHandler("Cannot modify system roles", 403);
       }
 
       // Verify permission
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'roles',
-        'manage_roles'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "roles",
+          "manage_roles"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to update roles', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to update roles",
+            403
+          );
+        }
       }
 
       const updateData = {
         ...Helpers.sanitizeInput(req.body),
-        updated_at: new Date()
+        updated_at: new Date(),
       };
 
       // Remove fields that shouldn't be updated
@@ -295,16 +341,20 @@ class RBACController {
       delete updateData.is_system_role;
 
       if (Object.keys(updateData).length <= 1) {
-        throw new ErrorHandler('No valid fields to update', 400);
+        throw new ErrorHandler("No valid fields to update", 400);
       }
 
       const { query, values } = Helpers.buildUpdateQuery(
-        'company_roles',
+        "company_roles",
         updateData,
-        'id = ? AND company_id = ?'
+        "id = ? AND company_id = ?"
       );
 
-      await connection.execute(query, [...values, roleId, req.query.company_id]);
+      await connection.execute(query, [
+        ...values,
+        roleId,
+        req.query.company_id,
+      ]);
 
       // Audit log
       await connection.execute(
@@ -315,7 +365,7 @@ class RBACController {
           roleId,
           req.query.id,
           JSON.stringify(existingRole[0]),
-          JSON.stringify(updateData)
+          JSON.stringify(updateData),
         ]
       );
 
@@ -323,12 +373,15 @@ class RBACController {
 
       // Fetch updated role
       const [updatedRole] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ?',
+        "SELECT * FROM company_roles WHERE id = ?",
         [roleId]
       );
 
-      return ResponseHandler.success(res, updatedRole[0], 'Role updated successfully');
-
+      return ResponseHandler.success(
+        res,
+        updatedRole[0],
+        "Role updated successfully"
+      );
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -346,26 +399,26 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const roleId = Helpers.validateId(req.params.id, 'Role ID');
+      const roleId = Helpers.validateId(req.params.id, "Role ID");
 
       // Check if role exists
       const [role] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [roleId, req.query.company_id]
       );
 
       if (role.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Prevent deleting system roles
       if (role[0].is_system_role === 1) {
-        throw new ErrorHandler('Cannot delete system roles', 403);
+        throw new ErrorHandler("Cannot delete system roles", 403);
       }
 
       // Check if any users have this role
       const [usersWithRole] = await connection.execute(
-        'SELECT COUNT(*) as count FROM users WHERE assigned_role_id = ?',
+        "SELECT COUNT(*) as count FROM users WHERE assigned_role_id = ?",
         [roleId]
       );
 
@@ -377,26 +430,31 @@ class RBACController {
       }
 
       // Verify permission
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'roles',
-        'manage_roles'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "roles",
+          "manage_roles"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to delete roles', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to delete roles",
+            403
+          );
+        }
       }
 
       // Delete role permissions first
       await connection.execute(
-        'DELETE FROM role_permissions WHERE company_role_id = ?',
+        "DELETE FROM role_permissions WHERE company_role_id = ?",
         [roleId]
       );
 
       // Delete role
       await connection.execute(
-        'DELETE FROM company_roles WHERE id = ? AND company_id = ?',
+        "DELETE FROM company_roles WHERE id = ? AND company_id = ?",
         [roleId, req.query.company_id]
       );
 
@@ -404,18 +462,12 @@ class RBACController {
       await connection.execute(
         `INSERT INTO permission_audit_log (company_id, action_type, target_role_id, performed_by, old_value, created_at)
          VALUES (?, 'ROLE_DELETED', ?, ?, ?, NOW())`,
-        [
-          req.query.company_id,
-          roleId,
-          req.query.id,
-          JSON.stringify(role[0])
-        ]
+        [req.query.company_id, roleId, req.query.id, JSON.stringify(role[0])]
       );
 
       await connection.commit();
 
-      return ResponseHandler.success(res, null, 'Role deleted successfully');
-
+      return ResponseHandler.success(res, null, "Role deleted successfully");
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -433,7 +485,7 @@ class RBACController {
     try {
       const { grouped } = req.query;
 
-      if (grouped === 'true') {
+      if (grouped === "true") {
         // Get modules grouped by module_group
         const [modules] = await db.execute(
           `SELECT sm.*, 
@@ -459,14 +511,14 @@ class RBACController {
 
           moduleMap[module.module_group].push({
             ...module,
-            permissions
+            permissions,
           });
         }
 
         return ResponseHandler.success(
           res,
           moduleMap,
-          'Grouped permissions retrieved successfully'
+          "Grouped permissions retrieved successfully"
         );
       } else {
         // Flat list of all modules and permissions
@@ -481,7 +533,7 @@ class RBACController {
         return ResponseHandler.success(
           res,
           modules,
-          'Permissions retrieved successfully'
+          "Permissions retrieved successfully"
         );
       }
     } catch (error) {
@@ -498,46 +550,56 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const roleId = Helpers.validateId(req.params.id, 'Role ID');
+      const roleId = Helpers.validateId(req.params.id, "Role ID");
       const { permission_ids, can_grant } = req.body;
 
-      if (!permission_ids || !Array.isArray(permission_ids) || permission_ids.length === 0) {
-        throw new ErrorHandler('Permission IDs are required', 400);
+      if (
+        !permission_ids ||
+        !Array.isArray(permission_ids) ||
+        permission_ids.length === 0
+      ) {
+        throw new ErrorHandler("Permission IDs are required", 400);
       }
 
       // Verify role exists
       const [role] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [roleId, req.query.company_id]
       );
 
       if (role.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Verify user has permission to assign permissions
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'roles',
-        'assign_permissions'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "roles",
+          "assign_permissions"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to assign permissions', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to assign permissions",
+            403
+          );
+        }
       }
-
       let assignedCount = 0;
       let skippedCount = 0;
 
       for (const permissionId of permission_ids) {
         // Check if user can grant this permission
-        const canGrantPermission = await RBACController.checkUserCanGrantPermission(
-          connection,
-          req.query.id,
-          permissionId,
-          req.query.company_id
-        );
+        const canGrantPermission =
+          RBACController.isOwner(req) ||
+          (await RBACController.checkUserCanGrantPermission(
+            connection,
+            req.query.id,
+            permissionId,
+            req.query.company_id
+          ));
 
         if (!canGrantPermission) {
           skippedCount++;
@@ -546,7 +608,7 @@ class RBACController {
 
         // Check if permission already exists
         const [existing] = await connection.execute(
-          'SELECT id FROM role_permissions WHERE company_role_id = ? AND system_permission_id = ?',
+          "SELECT id FROM role_permissions WHERE company_role_id = ? AND system_permission_id = ?",
           [roleId, permissionId]
         );
 
@@ -568,7 +630,11 @@ class RBACController {
           req.query.company_id,
           roleId,
           req.query.id,
-          JSON.stringify({ assigned: assignedCount, skipped: skippedCount, total: permission_ids.length })
+          JSON.stringify({
+            assigned: assignedCount,
+            skipped: skippedCount,
+            total: permission_ids.length,
+          }),
         ]
       );
 
@@ -576,10 +642,13 @@ class RBACController {
 
       return ResponseHandler.success(
         res,
-        { assigned: assignedCount, skipped: skippedCount, total: permission_ids.length },
+        {
+          assigned: assignedCount,
+          skipped: skippedCount,
+          total: permission_ids.length,
+        },
         `Permissions assigned successfully. ${assignedCount} assigned, ${skippedCount} skipped.`
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -597,37 +666,46 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const roleId = Helpers.validateId(req.params.id, 'Role ID');
+      const roleId = Helpers.validateId(req.params.id, "Role ID");
       const { permission_ids } = req.body;
 
-      if (!permission_ids || !Array.isArray(permission_ids) || permission_ids.length === 0) {
-        throw new ErrorHandler('Permission IDs are required', 400);
+      if (
+        !permission_ids ||
+        !Array.isArray(permission_ids) ||
+        permission_ids.length === 0
+      ) {
+        throw new ErrorHandler("Permission IDs are required", 400);
       }
 
       // Verify role exists
       const [role] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [roleId, req.query.company_id]
       );
 
       if (role.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Verify user has permission
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'roles',
-        'assign_permissions'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "roles",
+          "assign_permissions"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to revoke permissions', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to revoke permissions",
+            403
+          );
+        }
       }
 
       // Delete permissions
-      const placeholders = permission_ids.map(() => '?').join(',');
+      const placeholders = permission_ids.map(() => "?").join(",");
       const [result] = await connection.execute(
         `DELETE FROM role_permissions 
          WHERE company_role_id = ? AND system_permission_id IN (${placeholders})`,
@@ -642,7 +720,10 @@ class RBACController {
           req.query.company_id,
           roleId,
           req.query.id,
-          JSON.stringify({ revoked_count: result.affectedRows, permission_ids })
+          JSON.stringify({
+            revoked_count: result.affectedRows,
+            permission_ids,
+          }),
         ]
       );
 
@@ -653,7 +734,6 @@ class RBACController {
         { revoked: result.affectedRows },
         `${result.affectedRows} permission(s) revoked successfully`
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -673,43 +753,48 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const userId = Helpers.validateId(req.params.id, 'User ID');
+      const userId = Helpers.validateId(req.params.id, "User ID");
       const { role_id } = req.body;
 
       if (!role_id) {
-        throw new ErrorHandler('Role ID is required', 400);
+        throw new ErrorHandler("Role ID is required", 400);
       }
 
       // Verify user exists
       const [user] = await connection.execute(
-        'SELECT * FROM users WHERE id = ? AND company_id = ?',
+        "SELECT * FROM users WHERE id = ? AND company_id = ?",
         [userId, req.query.company_id]
       );
 
       if (user.length === 0) {
-        throw new ErrorHandler('User not found', 404);
+        throw new ErrorHandler("User not found", 404);
       }
 
       // Verify role exists
       const [role] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [role_id, req.query.company_id]
       );
 
       if (role.length === 0) {
-        throw new ErrorHandler('Role not found', 404);
+        throw new ErrorHandler("Role not found", 404);
       }
 
       // Verify permission to assign roles
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'users',
-        'assign_roles'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "users",
+          "assign_roles"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to assign roles', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to assign roles",
+            403
+          );
+        }
       }
 
       // Update user role
@@ -732,9 +817,8 @@ class RBACController {
       return ResponseHandler.success(
         res,
         { user_id: userId, role_id, role_name: role[0].role_name },
-        'Role assigned to user successfully'
+        "Role assigned to user successfully"
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -752,28 +836,33 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const userId = Helpers.validateId(req.params.id, 'User ID');
+      const userId = Helpers.validateId(req.params.id, "User ID");
 
       // Verify user exists
       const [user] = await connection.execute(
-        'SELECT * FROM users WHERE id = ? AND company_id = ?',
+        "SELECT * FROM users WHERE id = ? AND company_id = ?",
         [userId, req.query.company_id]
       );
 
       if (user.length === 0) {
-        throw new ErrorHandler('User not found', 404);
+        throw new ErrorHandler("User not found", 404);
       }
 
       // Verify permission
-      const hasPermission = await RBACController.checkUserPermission(
-        connection,
-        req.query.id,
-        'users',
-        'assign_roles'
-      );
+      if (!RBACController.isOwner(req)) {
+        const hasPermission = await RBACController.checkUserPermission(
+          connection,
+          req.query.id,
+          "users",
+          "assign_roles"
+        );
 
-      if (!hasPermission) {
-        throw new ErrorHandler('You do not have permission to revoke roles', 403);
+        if (!hasPermission) {
+          throw new ErrorHandler(
+            "You do not have permission to revoke roles",
+            403
+          );
+        }
       }
 
       // Revoke role
@@ -792,14 +881,17 @@ class RBACController {
           req.query.company_id,
           userId,
           req.query.id,
-          JSON.stringify({ old_role_id: user[0].assigned_role_id })
+          JSON.stringify({ old_role_id: user[0].assigned_role_id }),
         ]
       );
 
       await connection.commit();
 
-      return ResponseHandler.success(res, null, 'Role revoked from user successfully');
-
+      return ResponseHandler.success(
+        res,
+        null,
+        "Role revoked from user successfully"
+      );
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -813,7 +905,15 @@ class RBACController {
   /**
    * Check if user has specific permission
    */
-  static async checkUserPermission(connection, userId, moduleKey, permissionKey) {
+  static async checkUserPermission(
+    connection,
+    userId,
+    moduleKey,
+    permissionKey
+  ) {
+    if (userType === "owner") {
+      return true;
+    }
     const [result] = await connection.execute(
       `SELECT COUNT(*) as has_permission
        FROM users u
@@ -832,7 +932,15 @@ class RBACController {
   /**
    * Check if user can grant a specific permission
    */
-  static async checkUserCanGrantPermission(connection, userId, permissionId, companyId) {
+  static async checkUserCanGrantPermission(
+    connection,
+    userId,
+    permissionId,
+    companyId
+  ) {
+    if (userType === "owner") {
+      return true;
+    }
     // Check if user is owner
     const [isOwner] = await connection.execute(
       `SELECT COUNT(*) as is_owner 
@@ -865,7 +973,9 @@ class RBACController {
    */
   static async getUserPermissions(req, res) {
     try {
-      const userId = req.params.id ? Helpers.validateId(req.params.id, 'User ID') : req.query.id;
+      const userId = req.params.id
+        ? Helpers.validateId(req.params.id, "User ID")
+        : req.query.id;
 
       const [user] = await db.execute(
         `SELECT u.*, cr.role_name, cr.role_key
@@ -876,7 +986,7 @@ class RBACController {
       );
 
       if (user.length === 0) {
-        throw new ErrorHandler('User not found', 404);
+        throw new ErrorHandler("User not found", 404);
       }
 
       // Get role-based permissions
@@ -912,41 +1022,46 @@ class RBACController {
 
       // Group permissions by module
       const groupedPermissions = {};
-      
-      [...permissions, ...overrides].forEach(perm => {
+
+      [...permissions, ...overrides].forEach((perm) => {
         if (!groupedPermissions[perm.module_group]) {
           groupedPermissions[perm.module_group] = {};
         }
-        
+
         if (!groupedPermissions[perm.module_group][perm.module_key]) {
           groupedPermissions[perm.module_group][perm.module_key] = {
             module_name: perm.module_name,
             module_icon: perm.icon,
-            permissions: []
+            permissions: [],
           };
         }
 
-        groupedPermissions[perm.module_group][perm.module_key].permissions.push({
-          permission_key: perm.permission_key,
-          permission_name: perm.permission_name,
-          description: perm.description,
-          can_grant: perm.can_grant || 0,
-          source: perm.source
-        });
+        groupedPermissions[perm.module_group][perm.module_key].permissions.push(
+          {
+            permission_key: perm.permission_key,
+            permission_name: perm.permission_name,
+            description: perm.description,
+            can_grant: perm.can_grant || 0,
+            source: perm.source,
+          }
+        );
       });
 
-      return ResponseHandler.success(res, {
-        user: {
-          id: user[0].id,
-          email: user[0].email,
-          name: `${user[0].first_name} ${user[0].last_name}`,
-          role: user[0].role_name,
-          role_key: user[0].role_key
+      return ResponseHandler.success(
+        res,
+        {
+          user: {
+            id: user[0].id,
+            email: user[0].email,
+            name: `${user[0].first_name} ${user[0].last_name}`,
+            role: user[0].role_name,
+            role_key: user[0].role_key,
+          },
+          permissions: groupedPermissions,
+          total_permissions: permissions.length + overrides.length,
         },
-        permissions: groupedPermissions,
-        total_permissions: permissions.length + overrides.length
-      }, 'User permissions retrieved successfully');
-
+        "User permissions retrieved successfully"
+      );
     } catch (error) {
       return handleError(error, res);
     }
@@ -962,7 +1077,10 @@ class RBACController {
       const { module_key, permission_key } = req.query;
 
       if (!module_key || !permission_key) {
-        throw new ErrorHandler('Module key and permission key are required', 400);
+        throw new ErrorHandler(
+          "Module key and permission key are required",
+          400
+        );
       }
 
       const hasPermission = await RBACController.checkUserPermission(
@@ -972,12 +1090,15 @@ class RBACController {
         permission_key
       );
 
-      return ResponseHandler.success(res, {
-        has_permission: hasPermission,
-        module_key,
-        permission_key
-      }, hasPermission ? 'Permission granted' : 'Permission denied');
-
+      return ResponseHandler.success(
+        res,
+        {
+          has_permission: hasPermission,
+          module_key,
+          permission_key,
+        },
+        hasPermission ? "Permission granted" : "Permission denied"
+      );
     } catch (error) {
       return handleError(error, res);
     } finally {
@@ -996,48 +1117,53 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const userId = Helpers.validateId(req.params.id, 'User ID');
+      const userId = Helpers.validateId(req.params.id, "User ID");
       const { permission_id, expires_at, reason } = req.body;
 
       if (!permission_id) {
-        throw new ErrorHandler('Permission ID is required', 400);
+        throw new ErrorHandler("Permission ID is required", 400);
       }
 
       // Verify user exists
       const [user] = await connection.execute(
-        'SELECT * FROM users WHERE id = ? AND company_id = ?',
+        "SELECT * FROM users WHERE id = ? AND company_id = ?",
         [userId, req.query.company_id]
       );
 
       if (user.length === 0) {
-        throw new ErrorHandler('User not found', 404);
+        throw new ErrorHandler("User not found", 404);
       }
 
       // Verify permission exists
       const [permission] = await connection.execute(
-        'SELECT * FROM system_permissions WHERE id = ?',
+        "SELECT * FROM system_permissions WHERE id = ?",
         [permission_id]
       );
 
       if (permission.length === 0) {
-        throw new ErrorHandler('Permission not found', 404);
+        throw new ErrorHandler("Permission not found", 404);
       }
 
       // Verify user can grant this override
-      const canGrant = await RBACController.checkUserCanGrantPermission(
-        connection,
-        req.query.id,
-        permission_id,
-        req.query.company_id
-      );
+      if (!RBACController.isOwner(req)) {
+        const canGrant = await RBACController.checkUserCanGrantPermission(
+          connection,
+          req.query.id,
+          permission_id,
+          req.query.company_id
+        );
 
-      if (!canGrant) {
-        throw new ErrorHandler('You do not have permission to grant this override', 403);
+        if (!canGrant) {
+          throw new ErrorHandler(
+            "You do not have permission to grant this override",
+            403
+          );
+        }
       }
 
       // Check if override already exists
       const [existing] = await connection.execute(
-        'SELECT id FROM user_permission_overrides WHERE user_id = ? AND system_permission_id = ?',
+        "SELECT id FROM user_permission_overrides WHERE user_id = ? AND system_permission_id = ?",
         [userId, permission_id]
       );
 
@@ -1047,7 +1173,12 @@ class RBACController {
           `UPDATE user_permission_overrides 
            SET is_granted = 1, expires_at = ?, override_reason = ?, overridden_by = ?
            WHERE id = ?`,
-          [expires_at || null, reason?.trim() || null, req.query.id, existing[0].id]
+          [
+            expires_at || null,
+            reason?.trim() || null,
+            req.query.id,
+            existing[0].id,
+          ]
         );
       } else {
         // Create new override
@@ -1055,7 +1186,13 @@ class RBACController {
           `INSERT INTO user_permission_overrides 
            (user_id, system_permission_id, is_granted, override_reason, overridden_by, expires_at, created_at)
            VALUES (?, ?, 1, ?, ?, ?, NOW())`,
-          [userId, permission_id, reason?.trim() || null, req.query.id, expires_at || null]
+          [
+            userId,
+            permission_id,
+            reason?.trim() || null,
+            req.query.id,
+            expires_at || null,
+          ]
         );
       }
 
@@ -1064,9 +1201,8 @@ class RBACController {
       return ResponseHandler.success(
         res,
         { user_id: userId, permission_id, expires_at },
-        'Permission override granted successfully'
+        "Permission override granted successfully"
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -1084,16 +1220,16 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const userId = Helpers.validateId(req.params.id, 'User ID');
+      const userId = Helpers.validateId(req.params.id, "User ID");
       const { permission_id } = req.body;
 
       if (!permission_id) {
-        throw new ErrorHandler('Permission ID is required', 400);
+        throw new ErrorHandler("Permission ID is required", 400);
       }
 
       // Delete override
       const [result] = await connection.execute(
-        'DELETE FROM user_permission_overrides WHERE user_id = ? AND system_permission_id = ?',
+        "DELETE FROM user_permission_overrides WHERE user_id = ? AND system_permission_id = ?",
         [userId, permission_id]
       );
 
@@ -1102,9 +1238,10 @@ class RBACController {
       return ResponseHandler.success(
         res,
         { revoked: result.affectedRows },
-        result.affectedRows > 0 ? 'Permission override revoked successfully' : 'No override found'
+        result.affectedRows > 0
+          ? "Permission override revoked successfully"
+          : "No override found"
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);
@@ -1120,38 +1257,50 @@ class RBACController {
    */
   static async getAuditLogs(req, res) {
     try {
-      const { page, limit, action_type, user_id, role_id, start_date, end_date } = req.query;
-      const { page: pageNum, limit: limitNum, offset } = Helpers.validatePagination(page, limit);
+      const {
+        page,
+        limit,
+        action_type,
+        user_id,
+        role_id,
+        start_date,
+        end_date,
+      } = req.query;
+      const {
+        page: pageNum,
+        limit: limitNum,
+        offset,
+      } = Helpers.validatePagination(page, limit);
 
-      let whereConditions = ['company_id = ?'];
+      let whereConditions = ["company_id = ?"];
       let queryParams = [req.query.company_id];
 
       if (action_type) {
-        whereConditions.push('action_type = ?');
+        whereConditions.push("action_type = ?");
         queryParams.push(action_type);
       }
 
       if (user_id) {
-        whereConditions.push('target_user_id = ?');
+        whereConditions.push("target_user_id = ?");
         queryParams.push(user_id);
       }
 
       if (role_id) {
-        whereConditions.push('target_role_id = ?');
+        whereConditions.push("target_role_id = ?");
         queryParams.push(role_id);
       }
 
       if (start_date) {
-        whereConditions.push('DATE(created_at) >= ?');
+        whereConditions.push("DATE(created_at) >= ?");
         queryParams.push(Helpers.formatDate(start_date));
       }
 
       if (end_date) {
-        whereConditions.push('DATE(created_at) <= ?');
+        whereConditions.push("DATE(created_at) <= ?");
         queryParams.push(Helpers.formatDate(end_date));
       }
 
-      const whereClause = whereConditions.join(' AND ');
+      const whereClause = whereConditions.join(" AND ");
 
       // Count total
       const [countResult] = await db.execute(
@@ -1180,9 +1329,8 @@ class RBACController {
         res,
         logs,
         { page: pageNum, limit: limitNum, total },
-        'Audit logs retrieved successfully'
+        "Audit logs retrieved successfully"
       );
-
     } catch (error) {
       return handleError(error, res);
     }
@@ -1193,6 +1341,9 @@ class RBACController {
    */
   static async getRoleHierarchy(req, res) {
     try {
+      const companyId = Helpers.validateId(req.params.company_id, "Company ID");
+      console.log(companyId);
+      console.log(typeof companyId);
       const [roles] = await db.execute(
         `SELECT cr.*,
          pr.role_name as parent_role_name,
@@ -1202,23 +1353,26 @@ class RBACController {
          LEFT JOIN company_roles pr ON cr.parent_role_id = pr.id
          WHERE cr.company_id = ? AND cr.is_active = 1
          ORDER BY cr.hierarchy_level DESC, cr.created_at DESC`,
-        [req.query.company_id]
+        [companyId]
       );
 
       // Build hierarchy tree
       const buildTree = (parentId = null) => {
         return roles
-          .filter(role => role.parent_role_id === parentId)
-          .map(role => ({
+          .filter((role) => role.parent_role_id === parentId)
+          .map((role) => ({
             ...role,
-            children: buildTree(role.id)
+            children: buildTree(role.id),
           }));
       };
 
       const hierarchy = buildTree();
 
-      return ResponseHandler.success(res, hierarchy, 'Role hierarchy retrieved successfully');
-
+      return ResponseHandler.success(
+        res,
+        hierarchy,
+        "Role hierarchy retrieved successfully"
+      );
     } catch (error) {
       return handleError(error, res);
     }
@@ -1232,20 +1386,23 @@ class RBACController {
       const { role_ids } = req.query;
 
       if (!role_ids) {
-        throw new ErrorHandler('Role IDs are required (comma-separated)', 400);
+        throw new ErrorHandler("Role IDs are required (comma-separated)", 400);
       }
 
-      const roleIdArray = role_ids.split(',').map(id => parseInt(id.trim()));
+      const roleIdArray = role_ids.split(",").map((id) => parseInt(id.trim()));
 
       if (roleIdArray.length < 2) {
-        throw new ErrorHandler('At least 2 roles are required for comparison', 400);
+        throw new ErrorHandler(
+          "At least 2 roles are required for comparison",
+          400
+        );
       }
 
       const comparison = {};
 
       for (const roleId of roleIdArray) {
         const [role] = await db.execute(
-          'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+          "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
           [roleId, req.query.company_id]
         );
 
@@ -1266,12 +1423,15 @@ class RBACController {
         comparison[roleId] = {
           role_name: role[0].role_name,
           role_key: role[0].role_key,
-          permissions: permissions
+          permissions: permissions,
         };
       }
 
-      return ResponseHandler.success(res, comparison, 'Role comparison completed');
-
+      return ResponseHandler.success(
+        res,
+        comparison,
+        "Role comparison completed"
+      );
     } catch (error) {
       return handleError(error, res);
     }
@@ -1286,31 +1446,31 @@ class RBACController {
     try {
       await connection.beginTransaction();
 
-      const sourceRoleId = Helpers.validateId(req.params.id, 'Source Role ID');
+      const sourceRoleId = Helpers.validateId(req.params.id, "Source Role ID");
       const { new_role_key, new_role_name, include_can_grant } = req.body;
 
       if (!new_role_key || !new_role_name) {
-        throw new ErrorHandler('New role key and name are required', 400);
+        throw new ErrorHandler("New role key and name are required", 400);
       }
 
       // Verify source role exists
       const [sourceRole] = await connection.execute(
-        'SELECT * FROM company_roles WHERE id = ? AND company_id = ?',
+        "SELECT * FROM company_roles WHERE id = ? AND company_id = ?",
         [sourceRoleId, req.query.company_id]
       );
 
       if (sourceRole.length === 0) {
-        throw new ErrorHandler('Source role not found', 404);
+        throw new ErrorHandler("Source role not found", 404);
       }
 
       // Check for duplicate role key
       const [existing] = await connection.execute(
-        'SELECT id FROM company_roles WHERE role_key = ? AND company_id = ?',
+        "SELECT id FROM company_roles WHERE role_key = ? AND company_id = ?",
         [new_role_key.trim(), req.query.company_id]
       );
 
       if (existing.length > 0) {
-        throw new ErrorHandler('Role key already exists', 409);
+        throw new ErrorHandler("Role key already exists", 409);
       }
 
       // Create new role
@@ -1323,17 +1483,22 @@ class RBACController {
         created_by: req.query.id,
         is_active: 1,
         created_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
       };
 
-      const { query, values } = Helpers.buildInsertQuery('company_roles', newRoleData);
+      const { query, values } = Helpers.buildInsertQuery(
+        "company_roles",
+        newRoleData
+      );
       const [result] = await connection.execute(query, values);
       const newRoleId = result.insertId;
 
       // Copy permissions
       await connection.execute(
         `INSERT INTO role_permissions (company_role_id, system_permission_id, can_grant, granted_by, granted_at)
-         SELECT ?, system_permission_id, ${include_can_grant ? 'can_grant' : '0'}, ?, NOW()
+         SELECT ?, system_permission_id, ${
+           include_can_grant ? "can_grant" : "0"
+         }, ?, NOW()
          FROM role_permissions
          WHERE company_role_id = ?`,
         [newRoleId, req.query.id, sourceRoleId]
@@ -1344,9 +1509,8 @@ class RBACController {
       return ResponseHandler.created(
         res,
         { id: newRoleId, role_name: new_role_name, role_key: new_role_key },
-        'Role cloned successfully'
+        "Role cloned successfully"
       );
-
     } catch (error) {
       await connection.rollback();
       return handleError(error, res);

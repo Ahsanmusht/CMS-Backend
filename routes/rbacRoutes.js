@@ -1,7 +1,7 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const RBACController = require('../controllers/rbacController');
-const { authenticateToken } = require('../middleware/auth');
+const RBACController = require("../controllers/rbacController");
+const { authenticateToken } = require("../middleware/auth");
 
 // All RBAC routes require authentication
 router.use(authenticateToken);
@@ -16,6 +16,12 @@ router.use(authenticateToken);
  *     security:
  *       - bearerAuth: []
  *     parameters:
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company to fetch roles for
  *       - in: query
  *         name: page
  *         schema:
@@ -36,7 +42,7 @@ router.use(authenticateToken);
  *       200:
  *         description: List of roles
  */
-router.get('/roles', RBACController.getAllRoles);
+router.get("/roles", RBACController.getAllRoles);
 
 /**
  * @swagger
@@ -52,11 +58,17 @@ router.get('/roles', RBACController.getAllRoles);
  *         required: true
  *         schema:
  *           type: integer
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company the role belongs to
  *     responses:
  *       200:
  *         description: Role details
  */
-router.get('/roles/:id', RBACController.getRoleById);
+router.get("/roles/:id", RBACController.getRoleById);
 
 /**
  * @swagger
@@ -109,7 +121,7 @@ router.get('/roles/:id', RBACController.getRoleById);
  *       201:
  *         description: Role created successfully
  */
-router.post('/roles', RBACController.createRole);
+router.post("/roles", RBACController.createRole);
 
 /**
  * @swagger
@@ -125,11 +137,47 @@ router.post('/roles', RBACController.createRole);
  *         required: true
  *         schema:
  *           type: integer
+ *         description: ID of the role to update
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company the role belongs to
+ *       - in: query
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the logged-in user updating the role
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               role_key:
+ *                 type: string
+ *               role_name:
+ *                 type: string
+ *               is_system_role:
+ *                 type: integer
+ *               description:
+ *                 type: string
+ *               parent_role_id:
+ *                 type: integer
+ *               hierarchy_level:
+ *                 type: integer
+ *               permission_ids:
+ *                 type: array
+ *                 items:
+ *                   type: integer
  *     responses:
  *       200:
  *         description: Role updated successfully
  */
-router.put('/roles/:id', RBACController.updateRole);
+router.put("/roles/:id", RBACController.updateRole);
 
 /**
  * @swagger
@@ -145,11 +193,24 @@ router.put('/roles/:id', RBACController.updateRole);
  *         required: true
  *         schema:
  *           type: integer
+ *         description: ID of the role to delete
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company the role belongs to
+ *       - in: query
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the logged-in user performing the deletion
  *     responses:
  *       200:
  *         description: Role deleted successfully
  */
-router.delete('/roles/:id', RBACController.deleteRole);
+router.delete("/roles/:id", RBACController.deleteRole);
 
 /**
  * @swagger
@@ -165,11 +226,24 @@ router.delete('/roles/:id', RBACController.deleteRole);
  *         required: true
  *         schema:
  *           type: integer
+ *         description: ID of the role to clone
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company where the role should be cloned
+ *       - in: query
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the logged-in user performing the clone
  *     responses:
  *       201:
  *         description: Role cloned successfully
  */
-router.post('/roles/:id/clone', RBACController.cloneRole);
+router.post("/roles/:id/clone", RBACController.cloneRole);
 
 // ========== PERMISSION MANAGEMENT ==========
 /**
@@ -190,7 +264,7 @@ router.post('/roles/:id/clone', RBACController.cloneRole);
  *       200:
  *         description: Available permissions
  */
-router.get('/permissions/available', RBACController.getAvailablePermissions);
+router.get("/permissions/available", RBACController.getAvailablePermissions);
 
 /**
  * @swagger
@@ -225,7 +299,7 @@ router.get('/permissions/available', RBACController.getAvailablePermissions);
  *       200:
  *         description: Permissions assigned successfully
  */
-router.post('/roles/:id/permissions', RBACController.assignPermissionsToRole);
+router.post("/roles/:id/permissions", RBACController.assignPermissionsToRole);
 
 /**
  * @swagger
@@ -258,7 +332,10 @@ router.post('/roles/:id/permissions', RBACController.assignPermissionsToRole);
  *       200:
  *         description: Permissions revoked successfully
  */
-router.delete('/roles/:id/permissions', RBACController.revokePermissionsFromRole);
+router.delete(
+  "/roles/:id/permissions",
+  RBACController.revokePermissionsFromRole
+);
 
 // ========== USER ROLE ASSIGNMENT ==========
 /**
@@ -275,6 +352,19 @@ router.delete('/roles/:id/permissions', RBACController.revokePermissionsFromRole
  *         required: true
  *         schema:
  *           type: integer
+ *         description: ID of the user to assign role
+ *       - in: query
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company in which the user belongs
+ *       - in: query
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the logged-in user performing this action
  *     requestBody:
  *       required: true
  *       content:
@@ -290,7 +380,7 @@ router.delete('/roles/:id/permissions', RBACController.revokePermissionsFromRole
  *       200:
  *         description: Role assigned to user
  */
-router.post('/users/:id/role', RBACController.assignRoleToUser);
+router.post("/users/:id/role", RBACController.assignRoleToUser);
 
 /**
  * @swagger
@@ -310,7 +400,7 @@ router.post('/users/:id/role', RBACController.assignRoleToUser);
  *       200:
  *         description: Role revoked from user
  */
-router.delete('/users/:id/role', RBACController.revokeRoleFromUser);
+router.delete("/users/:id/role", RBACController.revokeRoleFromUser);
 
 /**
  * @swagger
@@ -330,7 +420,7 @@ router.delete('/users/:id/role', RBACController.revokeRoleFromUser);
  *       200:
  *         description: User permissions
  */
-router.get('/users/:id/permissions', RBACController.getUserPermissions);
+router.get("/users/:id/permissions", RBACController.getUserPermissions);
 
 /**
  * @swagger
@@ -355,7 +445,7 @@ router.get('/users/:id/permissions', RBACController.getUserPermissions);
  *       200:
  *         description: Permission check result
  */
-router.get('/permissions/check', RBACController.checkPermission);
+router.get("/permissions/check", RBACController.checkPermission);
 
 // ========== PERMISSION OVERRIDES ==========
 /**
@@ -392,7 +482,10 @@ router.get('/permissions/check', RBACController.checkPermission);
  *       200:
  *         description: Permission override granted
  */
-router.post('/users/:id/permissions/override', RBACController.grantPermissionOverride);
+router.post(
+  "/users/:id/permissions/override",
+  RBACController.grantPermissionOverride
+);
 
 /**
  * @swagger
@@ -423,7 +516,10 @@ router.post('/users/:id/permissions/override', RBACController.grantPermissionOve
  *       200:
  *         description: Permission override revoked
  */
-router.delete('/users/:id/permissions/override', RBACController.revokePermissionOverride);
+router.delete(
+  "/users/:id/permissions/override",
+  RBACController.revokePermissionOverride
+);
 
 // ========== AUDIT & REPORTING ==========
 /**
@@ -459,21 +555,28 @@ router.delete('/users/:id/permissions/override', RBACController.revokePermission
  *       200:
  *         description: Audit logs
  */
-router.get('/audit', RBACController.getAuditLogs);
+router.get("/audit", RBACController.getAuditLogs);
 
 /**
  * @swagger
- * /rbac/roles/hierarchy:
+ * /rbac/roles/hierarchy/{company_id}:
  *   get:
  *     summary: Get role hierarchy tree
  *     tags: [RBAC - Roles]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: company_id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the company for which to fetch role hierarchy
  *     responses:
  *       200:
  *         description: Role hierarchy
  */
-router.get('/roles/hierarchy', RBACController.getRoleHierarchy);
+router.get("/roles/hierarchy/:company_id", RBACController.getRoleHierarchy);
 
 /**
  * @swagger
@@ -494,6 +597,6 @@ router.get('/roles/hierarchy', RBACController.getRoleHierarchy);
  *       200:
  *         description: Role comparison
  */
-router.get('/roles/compare', RBACController.compareRoles);
+router.get("/roles/compare", RBACController.compareRoles);
 
 module.exports = router;

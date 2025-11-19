@@ -1,4 +1,4 @@
-const db = require('../config/database');
+const db = require("../config/database");
 
 /**
  * Middleware to check if user has specific permission
@@ -11,39 +11,50 @@ const requirePermission = (moduleKey, permissionKey) => {
       if (!req.user || !req.user.id) {
         return res.status(401).json({
           success: false,
-          message: 'Authentication required',
-          code: 'UNAUTHORIZED'
+          message: "Authentication required",
+          code: "UNAUTHORIZED",
         });
       }
 
       const userId = req.user.id;
+      const userType = req.user.userType;
+
+      // ✅ FIX 1: Owner ko bypass karo - owner has ALL permissions
+      if (userType === "owner") {
+        console.log(
+          `✅ Owner access granted for ${moduleKey}.${permissionKey}`
+        );
+        return next(); // Owner ke liye seedha allow karo
+      }
+
+      // Regular user ke liye checks
       const companyId = req.user.company_id;
 
       // Check if company is frozen
       const [company] = await db.execute(
-        'SELECT is_frozen FROM companies WHERE id = ?',
+        "SELECT is_frozen FROM companies WHERE id = ?",
         [companyId]
       );
 
       if (company.length > 0 && company[0].is_frozen) {
         return res.status(403).json({
           success: false,
-          message: 'Company is currently frozen. All operations are suspended.',
-          code: 'COMPANY_FROZEN'
+          message: "Company is currently frozen. All operations are suspended.",
+          code: "COMPANY_FROZEN",
         });
       }
 
       // Check if user is active
       const [user] = await db.execute(
-        'SELECT is_active FROM users WHERE id = ?',
+        "SELECT is_active FROM users WHERE id = ?",
         [userId]
       );
 
       if (user.length === 0 || !user[0].is_active) {
         return res.status(403).json({
           success: false,
-          message: 'User account is not active',
-          code: 'USER_INACTIVE'
+          message: "User account is not active",
+          code: "USER_INACTIVE",
         });
       }
 
@@ -91,19 +102,18 @@ const requirePermission = (moduleKey, permissionKey) => {
       return res.status(403).json({
         success: false,
         message: `Access denied. You don't have permission to ${permissionKey} in ${moduleKey} module.`,
-        code: 'PERMISSION_DENIED',
+        code: "PERMISSION_DENIED",
         required_permission: {
           module: moduleKey,
-          permission: permissionKey
-        }
+          permission: permissionKey,
+        },
       });
-
     } catch (error) {
-      console.error('Permission check error:', error);
+      console.error("Permission check error:", error);
       return res.status(500).json({
         success: false,
-        message: 'Error checking permissions',
-        code: 'PERMISSION_CHECK_ERROR'
+        message: "Error checking permissions",
+        code: "PERMISSION_CHECK_ERROR",
       });
     }
   };
@@ -111,7 +121,6 @@ const requirePermission = (moduleKey, permissionKey) => {
 
 /**
  * Middleware to check multiple permissions (OR logic)
- * User needs ANY ONE of the specified permissions
  */
 const requireAnyPermission = (...permissions) => {
   return async (req, res, next) => {
@@ -119,9 +128,14 @@ const requireAnyPermission = (...permissions) => {
       if (!req.user || !req.user.id) {
         return res.status(401).json({
           success: false,
-          message: 'Authentication required',
-          code: 'UNAUTHORIZED'
+          message: "Authentication required",
+          code: "UNAUTHORIZED",
         });
+      }
+
+      // ✅ FIX 2: Owner bypass
+      if (req.user.userType === "owner") {
+        return next();
       }
 
       const userId = req.user.id;
@@ -162,16 +176,16 @@ const requireAnyPermission = (...permissions) => {
 
       return res.status(403).json({
         success: false,
-        message: 'Access denied. You don\'t have any of the required permissions.',
-        code: 'PERMISSION_DENIED'
+        message:
+          "Access denied. You don't have any of the required permissions.",
+        code: "PERMISSION_DENIED",
       });
-
     } catch (error) {
-      console.error('Permission check error:', error);
+      console.error("Permission check error:", error);
       return res.status(500).json({
         success: false,
-        message: 'Error checking permissions',
-        code: 'PERMISSION_CHECK_ERROR'
+        message: "Error checking permissions",
+        code: "PERMISSION_CHECK_ERROR",
       });
     }
   };
@@ -179,7 +193,6 @@ const requireAnyPermission = (...permissions) => {
 
 /**
  * Middleware to check multiple permissions (AND logic)
- * User needs ALL specified permissions
  */
 const requireAllPermissions = (...permissions) => {
   return async (req, res, next) => {
@@ -187,9 +200,14 @@ const requireAllPermissions = (...permissions) => {
       if (!req.user || !req.user.id) {
         return res.status(401).json({
           success: false,
-          message: 'Authentication required',
-          code: 'UNAUTHORIZED'
+          message: "Authentication required",
+          code: "UNAUTHORIZED",
         });
+      }
+
+      // ✅ FIX 3: Owner bypass
+      if (req.user.userType === "owner") {
+        return next();
       }
 
       const userId = req.user.id;
@@ -208,7 +226,6 @@ const requireAllPermissions = (...permissions) => {
           [userId, moduleKey, permissionKey]
         );
 
-        // Check override if role doesn't have permission
         let hasPermission = rolePermission[0].has_permission > 0;
 
         if (!hasPermission) {
@@ -229,23 +246,22 @@ const requireAllPermissions = (...permissions) => {
           return res.status(403).json({
             success: false,
             message: `Access denied. Missing permission: ${permissionKey} in ${moduleKey}`,
-            code: 'PERMISSION_DENIED',
+            code: "PERMISSION_DENIED",
             missing_permission: {
               module: moduleKey,
-              permission: permissionKey
-            }
+              permission: permissionKey,
+            },
           });
         }
       }
 
       return next();
-
     } catch (error) {
-      console.error('Permission check error:', error);
+      console.error("Permission check error:", error);
       return res.status(500).json({
         success: false,
-        message: 'Error checking permissions',
-        code: 'PERMISSION_CHECK_ERROR'
+        message: "Error checking permissions",
+        code: "PERMISSION_CHECK_ERROR",
       });
     }
   };
@@ -259,11 +275,17 @@ const requireOwner = async (req, res, next) => {
     if (!req.user || !req.user.id) {
       return res.status(401).json({
         success: false,
-        message: 'Authentication required',
-        code: 'UNAUTHORIZED'
+        message: "Authentication required",
+        code: "UNAUTHORIZED",
       });
     }
 
+    // ✅ FIX 4: Direct owner check
+    if (req.user.userType === "owner") {
+      return next();
+    }
+
+    // Check if user is owner in database
     const [isOwner] = await db.execute(
       `SELECT COUNT(*) as is_owner 
        FROM companies c
@@ -278,26 +300,31 @@ const requireOwner = async (req, res, next) => {
 
     return res.status(403).json({
       success: false,
-      message: 'Access denied. Owner privileges required.',
-      code: 'OWNER_REQUIRED'
+      message: "Access denied. Owner privileges required.",
+      code: "OWNER_REQUIRED",
     });
-
   } catch (error) {
-    console.error('Owner check error:', error);
+    console.error("Owner check error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Error checking owner status',
-      code: 'OWNER_CHECK_ERROR'
+      message: "Error checking owner status",
+      code: "OWNER_CHECK_ERROR",
     });
   }
 };
 
 /**
- * Helper function to get user permissions (for attaching to req object)
+ * Helper function to get user permissions
  */
 const attachUserPermissions = async (req, res, next) => {
   try {
     if (!req.user || !req.user.id) {
+      return next();
+    }
+
+    // ✅ FIX 5: Owner gets all permissions
+    if (req.user.userType === "owner") {
+      req.userPermissions = ["*.*"]; // Wildcard for all permissions
       return next();
     }
 
@@ -321,13 +348,13 @@ const attachUserPermissions = async (req, res, next) => {
       [req.user.id, req.user.id]
     );
 
-    // Attach permissions to request object
-    req.userPermissions = permissions.map(p => `${p.module_key}.${p.permission_key}`);
-    
-    next();
+    req.userPermissions = permissions.map(
+      (p) => `${p.module_key}.${p.permission_key}`
+    );
 
+    next();
   } catch (error) {
-    console.error('Error attaching permissions:', error);
+    console.error("Error attaching permissions:", error);
     next();
   }
 };
@@ -337,5 +364,5 @@ module.exports = {
   requireAnyPermission,
   requireAllPermissions,
   requireOwner,
-  attachUserPermissions
+  attachUserPermissions,
 };
