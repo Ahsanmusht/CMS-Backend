@@ -448,7 +448,7 @@ router.post(
  * @swagger
  * /auth/login:
  *   post:
- *     summary: Secure universal login for both owners and users with company validation
+ *     summary: Universal Login with Role-Based User Type
  *     tags: [Authentication]
  *     requestBody:
  *       required: true
@@ -459,30 +459,17 @@ router.post(
  *             properties:
  *               email:
  *                 type: string
- *                 format: email
  *               password:
  *                 type: string
  *               company_id:
  *                 type: integer
- *                 description: Required for user login, optional for owner login
- *             required:
- *               - email
- *               - password
- *     responses:
- *       200:
- *         description: Login successful
- *       400:
- *         description: Missing required fields
- *       401:
- *         description: Invalid credentials or unauthorized access
- *       403:
- *         description: Account deactivated
+ *                 description: Required ONLY for regular users (not for owners/admins)
  */
 router.post("/login", loginRateLimiter, async (req, res, next) => {
   try {
     const { email, password, company_id } = req.body;
 
-    // Input validation
+    // ============ VALIDATION ============
     if (!email || !password) {
       return res.status(400).json({
         message: "Email and password are required",
@@ -490,7 +477,6 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       });
     }
 
-    // Email format validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({
@@ -501,8 +487,10 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
 
     let user = null;
     let userType = null;
+    let userRole = null;
+    let hasFullAccess = false;
 
-    // First check in owners table (owners don't need company_id)
+    // ============ STEP 1: Check in OWNERS table ============
     const [owners] = await db.execute(
       "SELECT id, name, email, password_hash, created_at FROM owners WHERE email = ? AND is_active = 1",
       [email.toLowerCase().trim()]
@@ -511,89 +499,165 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
     if (owners.length > 0) {
       user = owners[0];
       userType = "owner";
+      userRole = "Super Admin";
+      hasFullAccess = true; // Owner always has full access
     } else {
-      // For users, company_id is mandatory
+      // ============ STEP 2: Check in USERS table ============
+
+      // For users WITHOUT company_id (admin types)
       if (!company_id) {
-        return res.status(400).json({
-          message: "Company ID is required for user login",
-          code: "MISSING_COMPANY_ID",
-        });
-      }
+        const [usersWithoutCompany] = await db.execute(
+          `SELECT u.id, u.email, u.first_name, u.last_name, u.company_id, 
+                  u.password_hash, u.is_active, u.created_at, u.last_login_at,
+                  u.assigned_role_id,
+                  c.name as company_name, c.is_frozen,
+                  cr.role_key, cr.role_name
+           FROM users u 
+           JOIN companies c ON u.company_id = c.id 
+           LEFT JOIN company_roles cr ON u.assigned_role_id = cr.id
+           WHERE u.email = ? AND c.is_active = 1`,
+          [email.toLowerCase().trim()]
+        );
 
-      // Validate company_id is a number
-      if (isNaN(company_id) || company_id <= 0) {
-        return res.status(400).json({
-          error: "Invalid company ID",
-          code: "INVALID_COMPANY_ID",
-        });
-      }
+        if (usersWithoutCompany.length > 0) {
+          user = usersWithoutCompany[0];
 
-      // First verify company exists and is active
-      const [companies] = await db.execute(
-        "SELECT id, name, is_active FROM companies WHERE id = ?",
-        [company_id]
-      );
+          // Check if company is frozen
+          if (user.is_frozen) {
+            return res.status(403).json({
+              message: "Company is frozen. Please contact support.",
+              code: "COMPANY_FROZEN",
+            });
+          }
 
-      if (companies.length === 0) {
-        return res.status(401).json({
-          error: "Invalid company",
-          code: "COMPANY_NOT_FOUND",
-        });
-      }
+          // Determine userType based on role
+          if (user.role_key) {
+            userType = user.role_key;
+            userRole = user.role_name;
+          } else {
+            userType = "user";
+            userRole = "User";
+          }
 
-      const company = companies[0];
-      if (!company.is_active) {
-        return res.status(403).json({
-          message: "Company is deactivated. Please contact support.",
-          code: "COMPANY_DEACTIVATED",
-        });
-      }
+          // Check permissions to determine hasFullAccess
+          if (user.assigned_role_id) {
+            const [permissionCount] = await db.execute(
+              `SELECT COUNT(DISTINCT sp.id) as total_permissions,
+                      COUNT(DISTINCT CASE WHEN sm.module_key IN ('users', 'roles', 'companies', 'settings') THEN sp.id END) as admin_permissions
+               FROM role_permissions rp
+               INNER JOIN system_permissions sp ON rp.system_permission_id = sp.id
+               INNER JOIN system_modules sm ON sp.module_id = sm.id
+               WHERE rp.company_role_id = ? AND sm.is_active = 1 AND sp.is_active = 1`,
+              [user.assigned_role_id]
+            );
 
-      // Now check user with specific company_id constraint
-      const [users] = await db.execute(
-        `SELECT u.id, u.email, u.first_name, u.last_name, u.company_id, 
-                u.password_hash, u.is_active, u.created_at, u.last_login_at,
-                c.name as company_name
-         FROM users u 
-         JOIN companies c ON u.company_id = c.id 
-         WHERE u.email = ? AND u.company_id = ? AND c.is_active = 1`,
-        [email.toLowerCase().trim(), company_id]
-      );
-
-      if (users.length > 0) {
-        user = users[0];
-        userType = "user";
-
-        // Check if user is active
-        if (!user.is_active) {
-          return res.status(403).json({
-            message:
-              "Your account is deactivated. Please contact your administrator.",
-            code: "USER_DEACTIVATED",
+            // User has full access if they have permissions for critical admin modules
+            hasFullAccess = permissionCount[0].admin_permissions > 0;
+          }
+        }
+      } else {
+        // For users WITH company_id (regular users)
+        if (isNaN(company_id) || company_id <= 0) {
+          return res.status(400).json({
+            error: "Invalid company ID",
+            code: "INVALID_COMPANY_ID",
           });
+        }
+
+        // Verify company exists and is active
+        const [companies] = await db.execute(
+          "SELECT id, name, is_active, is_frozen FROM companies WHERE id = ?",
+          [company_id]
+        );
+
+        if (companies.length === 0) {
+          return res.status(401).json({
+            error: "Invalid company",
+            code: "COMPANY_NOT_FOUND",
+          });
+        }
+
+        if (!companies[0].is_active) {
+          return res.status(403).json({
+            message: "Company is deactivated. Please contact support.",
+            code: "COMPANY_DEACTIVATED",
+          });
+        }
+
+        if (companies[0].is_frozen) {
+          return res.status(403).json({
+            message: "Company is frozen. Please contact support.",
+            code: "COMPANY_FROZEN",
+          });
+        }
+
+        // Get user with specific company
+        const [users] = await db.execute(
+          `SELECT u.id, u.email, u.first_name, u.last_name, u.company_id, 
+                  u.password_hash, u.is_active, u.created_at, u.last_login_at,
+                  u.assigned_role_id,
+                  c.name as company_name,
+                  cr.role_key, cr.role_name
+           FROM users u 
+           JOIN companies c ON u.company_id = c.id 
+           LEFT JOIN company_roles cr ON u.assigned_role_id = cr.id
+           WHERE u.email = ? AND u.company_id = ? AND c.is_active = 1`,
+          [email.toLowerCase().trim(), company_id]
+        );
+
+        if (users.length > 0) {
+          user = users[0];
+
+          // Determine userType based on role
+          if (user.role_key) {
+            userType = user.role_key;
+            userRole = user.role_name;
+          } else {
+            userType = "user";
+            userRole = "User";
+          }
+
+          // Check if user is active
+          if (!user.is_active) {
+            return res.status(403).json({
+              message:
+                "Your account is deactivated. Please contact your administrator.",
+              code: "USER_DEACTIVATED",
+            });
+          }
+
+          // Check permissions to determine hasFullAccess
+          if (user.assigned_role_id) {
+            const [permissionCount] = await db.execute(
+              `SELECT COUNT(DISTINCT sp.id) as total_permissions,
+                      COUNT(DISTINCT CASE WHEN sm.module_key IN ('users', 'roles', 'companies', 'settings') THEN sp.id END) as admin_permissions
+               FROM role_permissions rp
+               INNER JOIN system_permissions sp ON rp.system_permission_id = sp.id
+               INNER JOIN system_modules sm ON sp.module_id = sm.id
+               WHERE rp.company_role_id = ? AND sm.is_active = 1 AND sp.is_active = 1`,
+              [user.assigned_role_id]
+            );
+
+            // User has full access if they have permissions for critical admin modules
+            hasFullAccess = permissionCount[0].admin_permissions > 0;
+          }
         }
       }
     }
 
-    // If no user found
+    // ============ STEP 3: User not found ============
     if (!user) {
-      // Don't reveal which part failed for security
       return res.status(401).json({
         message: "Invalid credentials",
         code: "INVALID_CREDENTIALS",
       });
     }
 
-    // Verify password with timing attack protection
+    // ============ STEP 4: Verify password ============
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
     if (!isValidPassword) {
-      // Log failed attempt for security monitoring
-      console.log(
-        `Failed login attempt for email: ${email}, IP: ${
-          req.ip
-        }, UserAgent: ${req.get("User-Agent")}`
-      );
+      console.log(`Failed login attempt for email: ${email}, IP: ${req.ip}`);
 
       return res.status(401).json({
         message: "Invalid credentials",
@@ -601,31 +665,153 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       });
     }
 
-    // Additional security: Check for suspicious login patterns
+    // ============ STEP 5: Security tracking ============
     const userAgent = req.get("User-Agent");
     const clientIP = req.ip || req.connection.remoteAddress;
 
-    // Update last login and security info for users
-    if (userType === "user") {
-      await db.execute(
-        "UPDATE users SET last_login_at = NOW(), last_login_ip = ?, last_user_agent = ? WHERE id = ?",
-        [clientIP, userAgent, user.id]
-      );
-    } else {
-      // Update for owners too
+    if (userType === "owner") {
       await db.execute(
         "UPDATE owners SET last_login_at = NOW(), last_login_ip = ?, last_user_agent = ? WHERE id = ?",
         [clientIP, userAgent, user.id]
       );
+    } else {
+      await db.execute(
+        "UPDATE users SET last_login_at = NOW(), last_login_ip = ?, last_user_agent = ? WHERE id = ?",
+        [clientIP, userAgent, user.id]
+      );
     }
 
-    // Create JWT token with comprehensive payload
+    // ============ STEP 6: Fetch User Permissions (Hierarchy) ============
+    let permissions = [];
+
+    if (userType === "owner") {
+      // Owner gets ALL system permissions with full hierarchy
+      const [allPermissions] = await db.execute(
+        `SELECT 
+          sm.id as module_id,
+          sm.module_key,
+          sm.module_name,
+          sm.module_group,
+          sm.icon,
+          sm.sort_order,
+          sp.id as permission_id,
+          sp.permission_key,
+          sp.permission_name,
+          1 as can_grant
+        FROM system_modules sm
+        LEFT JOIN system_permissions sp ON sm.id = sp.module_id
+        WHERE sm.is_active = 1 AND (sp.is_active = 1 OR sp.id IS NULL)
+        ORDER BY sm.module_group, sm.sort_order, sm.module_key, sp.permission_key`
+      );
+
+      // Structure permissions hierarchically
+      permissions = structurePermissions(allPermissions);
+    } else if (user.assigned_role_id) {
+      // Regular user - fetch their role-based permissions
+      const [rolePermissions] = await db.execute(
+        `SELECT 
+          sm.id as module_id,
+          sm.module_key,
+          sm.module_name,
+          sm.module_group,
+          sm.icon,
+          sm.sort_order,
+          sp.id as permission_id,
+          sp.permission_key,
+          sp.permission_name,
+          rp.can_grant
+        FROM role_permissions rp
+        INNER JOIN system_permissions sp ON rp.system_permission_id = sp.id
+        INNER JOIN system_modules sm ON sp.module_id = sm.id
+        WHERE rp.company_role_id = ? 
+          AND sm.is_active = 1 
+          AND sp.is_active = 1
+        
+        UNION
+        
+        SELECT 
+          sm.id as module_id,
+          sm.module_key,
+          sm.module_name,
+          sm.module_group,
+          sm.icon,
+          sm.sort_order,
+          sp.id as permission_id,
+          sp.permission_key,
+          sp.permission_name,
+          0 as can_grant
+        FROM user_permission_overrides upo
+        INNER JOIN system_permissions sp ON upo.system_permission_id = sp.id
+        INNER JOIN system_modules sm ON sp.module_id = sm.id
+        WHERE upo.user_id = ? 
+          AND upo.is_granted = 1
+          AND (upo.expires_at IS NULL OR upo.expires_at > NOW())
+          AND sm.is_active = 1 
+          AND sp.is_active = 1
+        
+        ORDER BY module_group, sort_order, module_key, permission_key`,
+        [user.assigned_role_id, user.id]
+      );
+
+      // Structure permissions hierarchically
+      permissions = structurePermissions(rolePermissions);
+    }
+
+    // Helper function to structure permissions
+    function structurePermissions(flatPermissions) {
+      const grouped = {};
+
+      flatPermissions.forEach((perm) => {
+        const moduleKey = perm.module_key;
+
+        if (!grouped[moduleKey]) {
+          grouped[moduleKey] = {
+            module_id: perm.module_id,
+            module_key: perm.module_key,
+            module_name: perm.module_name,
+            module_group: perm.module_group,
+            icon: perm.icon,
+            sort_order: perm.sort_order,
+            permissions: [],
+          };
+        }
+
+        if (perm.permission_id) {
+          grouped[moduleKey].permissions.push({
+            permission_id: perm.permission_id,
+            permission_key: perm.permission_key,
+            permission_name: perm.permission_name,
+            can_grant: !!perm.can_grant,
+          });
+        }
+      });
+
+      // Convert to array and group by module_group
+      const moduleGroups = {};
+      Object.values(grouped).forEach((module) => {
+        const group = module.module_group || "OTHER";
+        if (!moduleGroups[group]) {
+          moduleGroups[group] = [];
+        }
+        moduleGroups[group].push(module);
+      });
+
+      // Sort modules within each group
+      Object.keys(moduleGroups).forEach((group) => {
+        moduleGroups[group].sort((a, b) => a.sort_order - b.sort_order);
+      });
+
+      return moduleGroups;
+    }
+
+    // ============ STEP 7: Create JWT token ============
     let tokenPayload = {
       id: user.id,
       email: user.email,
       userType,
+      role: userRole,
+      hasFullAccess,
       iat: Math.floor(Date.now() / 1000),
-      // Add client info for token validation
       ip: clientIP,
       userAgent: userAgent,
     };
@@ -634,7 +820,10 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       id: user.id,
       email: user.email,
       userType,
+      role: userRole,
+      hasFullAccess,
       last_login_at: user.last_login_at,
+      permissions, // Add complete permission hierarchy
     };
 
     if (userType === "owner") {
@@ -645,30 +834,31 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       tokenPayload.firstName = user.first_name;
       tokenPayload.lastName = user.last_name;
       tokenPayload.companyName = user.company_name;
+      tokenPayload.roleId = user.assigned_role_id;
+      tokenPayload.roleKey = user.role_key;
 
       responseUser.first_name = user.first_name;
       responseUser.last_name = user.last_name;
       responseUser.company_id = user.company_id;
       responseUser.company_name = user.company_name;
+      responseUser.role_id = user.assigned_role_id;
+      responseUser.role_key = user.role_key;
     }
 
-    // Create token with shorter expiry for better security
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || "24h",
       issuer: userType === "owner" ? "system-owner" : user.company_name,
       audience: userType,
     });
 
-    // Create refresh token for better UX
     const refreshToken = jwt.sign(
       { id: user.id, userType },
       process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    // Log successful login for security monitoring
     console.log(
-      `Successful login: ${email}, Type: ${userType}, IP: ${clientIP}`
+      `Successful login: ${email}, Type: ${userType}, Role: ${userRole}, HasFullAccess: ${hasFullAccess}, IP: ${clientIP}`
     );
 
     res.set({
@@ -685,7 +875,6 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       expires_in: process.env.JWT_EXPIRES_IN || "24h",
     });
   } catch (error) {
-    // Log error for debugging but don't expose details
     console.error("Login error:", error);
 
     res.status(500).json({
