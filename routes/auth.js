@@ -463,7 +463,43 @@ router.post(
  *                 type: string
  *               company_id:
  *                 type: integer
- *                 description: Required ONLY for regular users (not for owners/admins)
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Login successful
+ *                 token:
+ *                   type: string
+ *                 refresh_token:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                     email:
+ *                       type: string
+ *                     userType:
+ *                       type: string
+ *                     role:
+ *                       type: string
+ *                     hasFullAccess:
+ *                       type: boolean
+ *                 expires_in:
+ *                   type: string
+ *                   example: 24h
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
  */
 router.post("/login", loginRateLimiter, async (req, res, next) => {
   try {
